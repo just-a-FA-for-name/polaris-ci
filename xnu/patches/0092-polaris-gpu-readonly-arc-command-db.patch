@@ -1,0 +1,10 @@
+diff --git a/bsd/dev/polaris_gpu_diag.c b/bsd/dev/polaris_gpu_diag.c
+--- a/bsd/dev/polaris_gpu_diag.c
++++ b/bsd/dev/polaris_gpu_diag.c
+@@ -126,5 +126,6 @@ polaris_gpu_diag(void)
+ 	}
+ 	printf("POLARIS GPU: %u/6 blobs missing; firmware metadata only; "
+ 	    "GPU/GMU/SMMU registers untouched, CPU display unchanged\n", missing);
++	printf("POLARIS GPU: ARC DB mapping deferred until XNU reservation ownership is proven\n");
+ }
+ #endif

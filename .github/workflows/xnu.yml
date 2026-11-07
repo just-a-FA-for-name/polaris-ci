@@ -1,0 +1,223 @@
+name: xnu
+
+on:
+  workflow_dispatch:
+    inputs:
+      macos_version:
+        description: macOS release whose xnu to build (13.5 = xnu-8796, iOS 16 era)
+        default: "13.5"
+      kernel_config:
+        description: RELEASE / DEVELOPMENT / DEBUG / PREVIEW_ONLY / DRIVER_FOUNDATIONS / MAINTENANCE_ONLY
+        default: DEVELOPMENT
+      machine_config:
+        description: xnu MACHINE_CONFIG
+        default: SWEET
+      keep_going:
+        description: make -k (collect all compile errors in one run)
+        default: "true"
+  push:
+    branches: [main]
+    paths:
+      - "xnu/patches/**"
+      - ".github/workflows/xnu.yml"
+
+concurrency:
+  group: xnu-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DXB_REPO: https://github.com/blacktop/darwin-xnu-build
+  DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
+  MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
+  KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
+  MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
+
+jobs:
+  build:
+    if: ${{ inputs.kernel_config != 'PREVIEW_ONLY' && inputs.kernel_config != 'DRIVER_FOUNDATIONS' && inputs.kernel_config != 'MAINTENANCE_ONLY' }}
+    # macos-14 was retired on 2026-11-02. Use Intel macOS 15 and select its
+    # oldest Xcode below; 0095 adds the IORPC.kernelContent ABI used by Xcode 16 iig.
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch build script
+        run: |
+          git init -q dxb
+          git -C dxb fetch -q --depth 1 "$DXB_REPO" "$DXB_SHA"
+          git -C dxb checkout -q FETCH_HEAD
+          # 12.5-14.3 use the top-level patches dir; ours go next to blacktop's
+          cp xnu/patches/*.patch xnu/patches/*.sh dxb/patches/
+          # libfirehose_kernel is built arm64e-only; the SWEET kernel is plain arm64
+          sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
+          grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
+          ls dxb/patches
+
+      - name: Deps
+        run: |
+          brew install jq gum bash cmake ninja
+          # build.sh only checks that xcodes exists (Xcode is preinstalled); no bottle on macOS 14
+          printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/local/bin/xcodes >/dev/null
+          sudo chmod +x /usr/local/bin/xcodes
+          sw_vers
+          ls -d /Applications/Xcode*.app
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          xcrun --find iig
+
+      - name: Build
+        working-directory: dxb
+        env:
+          # keep going after errors so one run reports every compile failure
+          MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
+        run: bash build.sh
+
+      - name: Package build tree for local compiles
+        if: always()
+        run: |
+          # Generated headers, config option headers, mig output and the patched
+          # source: enough to re-run any single compile command from the log locally.
+          SDK=$(xcrun --sdk macosx --show-sdk-path)
+          mkdir -p sdk-kernel-platform
+          cp -R "$SDK/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders/platform" sdk-kernel-platform/ || true
+          tar czf buildtree.tgz \
+            --exclude='*.o' --exclude='*.cpo' --exclude='*.a' --exclude='*.dSYM' --exclude='*.unstripped' \
+            --exclude='kernel.development.*' --exclude='.git' \
+            -C dxb build/xnu.obj fakeroot/usr/local/include xnu \
+            -C .. sdk-kernel-platform
+          ls -la buildtree.tgz
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xnu-buildtree
+          path: buildtree.tgz
+          retention-days: 7
+
+      - name: Inspect closed KDK support libs
+        if: always()
+        run: |
+          mkdir -p out/kdk-libs
+          for lib in /Library/Developer/KDKs/*/System/Library/KernelSupport/lib*.a; do
+            b=$(basename "$lib" .a)
+            ar t "$lib" > "out/kdk-libs/$b.members.txt" 2>&1 || true
+            nm -m "$lib" > "out/kdk-libs/$b.nm.txt" 2>&1 || true
+            lipo -info "$lib" >> out/kdk-libs/arch.txt 2>&1 || true
+          done
+          ls -la out/kdk-libs
+
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p out
+          cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
+          ls -la out
+          (cd out && shasum -a 256 kernel.* > SHA256SUMS) || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xnu-kernel
+          path: out/
+          if-no-files-found: warn
+
+  poster-maintenance:
+    if: ${{ inputs.kernel_config == 'RELEASE' || inputs.kernel_config == 'MAINTENANCE_ONLY' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native tests and one-shot maintenance executable
+        run: |
+          python3 -m unittest discover -s tools -p 'test_*.py' -v
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          export DEVELOPER_DIR="$XC/Contents/Developer"
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p maintenance-out
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 \
+            -isysroot "$SDK" -fobjc-arc -fblocks -Wall -Wextra \
+            -Werror=implicit-function-declaration -Wno-deprecated-declarations \
+            userland/PolarisPosterMaintenance.m -framework Foundation \
+            -o maintenance-out/polaris-poster-maintenance
+          codesign --force --sign - --entitlements userland/PolarisPosterMaintenance.entitlements.plist \
+            maintenance-out/polaris-poster-maintenance
+          codesign --verify --strict maintenance-out/polaris-poster-maintenance
+          file maintenance-out/polaris-poster-maintenance
+          otool -L maintenance-out/polaris-poster-maintenance
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 \
+            -isysroot "$SDK" -std=c11 -Wall -Wextra -Werror -dynamiclib \
+            userland/polaris_hfi.c userland/polaris_mdt.c userland/polaris_mss.c userland/polaris_bt_h4.c \
+            -Wl,-install_name,/usr/local/lib/libPolarisBringup.dylib \
+            -o maintenance-out/libPolarisBringup.dylib
+          codesign --force --sign - maintenance-out/libPolarisBringup.dylib
+          codesign --verify --strict maintenance-out/libPolarisBringup.dylib
+          (cd maintenance-out && shasum -a 256 polaris-poster-maintenance libPolarisBringup.dylib > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-poster-maintenance
+          path: maintenance-out/
+          retention-days: 7
+
+  driver-foundations:
+    if: ${{ inputs.kernel_config == 'DRIVER_FOUNDATIONS' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test native protocol and loader implementations
+        run: python3 -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Compile and link iOS16 arm64 foundation library
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          export DEVELOPER_DIR="$XC/Contents/Developer"
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p foundations-out
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 \
+            -isysroot "$SDK" -std=c11 -Wall -Wextra -Werror -dynamiclib \
+            userland/polaris_hfi.c userland/polaris_mdt.c userland/polaris_mss.c userland/polaris_bt_h4.c \
+            -Wl,-install_name,/usr/local/lib/libPolarisBringup.dylib \
+            -o foundations-out/libPolarisBringup.dylib
+          codesign --force --sign - foundations-out/libPolarisBringup.dylib
+          codesign --verify --strict foundations-out/libPolarisBringup.dylib
+          file foundations-out/libPolarisBringup.dylib
+          otool -L foundations-out/libPolarisBringup.dylib
+          nm -gU foundations-out/libPolarisBringup.dylib
+          (cd foundations-out && shasum -a 256 libPolarisBringup.dylib > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-driver-foundations
+          path: foundations-out/
+          retention-days: 7
+
+  preview-compat:
+    if: ${{ inputs.kernel_config == 'PREVIEW_ONLY' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile scoped iOS16 bitmap preview fallback
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          export DEVELOPER_DIR="$XC/Contents/Developer"
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p preview-out
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 \
+            -isysroot "$SDK" -fobjc-arc -fblocks -dynamiclib \
+            -Werror=implicit-function-declaration -Wno-deprecated-declarations \
+            userland/PolarisPreviewCompat.m userland/PolarisPosterDiagnostics.m \
+            -o preview-out/PolarisPreviewCompat.dylib \
+            -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework Metal \
+            -Wl,-install_name,/Applications/PosterBoard.app/PolarisPreviewCompat.dylib
+          codesign --force --sign - preview-out/PolarisPreviewCompat.dylib
+          codesign --verify --strict preview-out/PolarisPreviewCompat.dylib
+          file preview-out/PolarisPreviewCompat.dylib
+          otool -L preview-out/PolarisPreviewCompat.dylib
+          (cd preview-out && shasum -a 256 PolarisPreviewCompat.dylib > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-preview-compat
+          path: preview-out/
+          retention-days: 7
