@@ -210,6 +210,103 @@
  	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
  	}
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5574,8 +5574,73 @@
+  */
+ __attribute__((noinline))
+ static int
++/*
++ * Bring-up aid: the sysctl kern.exec_inject holds "LIBRARY NAME NAME ..."; every program
++ * whose file name is one of the NAMEs is started with DYLD_INSERT_LIBRARIES=LIBRARY in its
++ * environment, so that dyld loads our library into it. Several such groups may follow each
++ * other, separated by ";". A program named in more than one group gets every one of those
++ * libraries, joined with ":" in the one DYLD_INSERT_LIBRARIES, so SpringBoard can carry both
++ * our window-server library and the tweak loader. launchd refuses to pass DYLD_ variables
++ * from a job description, which is why the kernel adds this one. Set once by our init (from
++ * etc/inject.conf) before it hands over to launchd.
++ */
++static char exec_inject_conf[512];
++SYSCTL_STRING(_kern, OID_AUTO, exec_inject, CTLFLAG_RW | CTLFLAG_LOCKED, exec_inject_conf, sizeof(exec_inject_conf),
++    "LIBRARY NAME... [; LIBRARY NAME...]: programs started with the library inserted");
++
++static bool
++exec_inject_env(struct image_params *imgp, char *env, size_t size)
++{
++	const char *name, *p = exec_inject_conf;
++	size_t namelen, used;
++	bool any = false;
++
++	if (*p == 0 || imgp->ip_ndp == NULL) {
++		return false;
++	}
++	name = imgp->ip_ndp->ni_cnd.cn_nameptr;
++	namelen = imgp->ip_ndp->ni_cnd.cn_namelen;
++	used = strlcpy(env, "DYLD_INSERT_LIBRARIES=", size);
++	while (*p != 0) {
++		const char *library;
++		size_t liblen;
++		bool matched = false;
++
++		while (*p == ' ' || *p == ';') {
++			p++;
++		}
++		library = p;
++		while (*p != 0 && *p != ' ' && *p != ';') {
++			p++;
++		}
++		liblen = (size_t)(p - library);
++		while (*p == ' ') {
++			const char *word = ++p;
++
++			while (*p != 0 && *p != ' ' && *p != ';') {
++				p++;
++			}
++			if (!matched && (size_t)(p - word) == namelen && namelen != 0 && liblen != 0 &&
++			    strncmp(word, name, namelen) == 0) {
++				matched = true;         /* this group names this program; its library is added once */
++			}
++		}
++		if (matched && liblen != 0 && used + 1 + liblen < size) {
++			if (any) {
++				env[used++] = ':';      /* dyld takes several libraries separated by ":" */
++			}
++			memcpy(env + used, library, liblen);
++			used += liblen;
++			env[used] = 0;
++			any = true;
++		}
++	}
++	return any;
++}
++
+ exec_extract_strings(struct image_params *imgp)
+ {
++	char            inject_env[512];
+ 	int error = 0;
+ 	int     ptr_size = (imgp->ip_flags & IMGPF_WAS_64BIT_ADDR) ? 8 : 4;
+ 	int new_ptr_size = (imgp->ip_flags & IMGPF_IS_64BIT_ADDR) ? 8 : 4;
+@@ -5742,6 +5807,20 @@
+ 			goto bad;
+ 		}
+ 		imgp->ip_argspace -= new_ptr_size; /* to hold envv[] entry */
++		imgp->ip_envc++;
++	}
++
++	/* one more variable for the programs that get our library inside them (see exec_inject_env) */
++	if (exec_inject_env(imgp, inject_env, sizeof(inject_env))) {
++		error = exec_add_user_string(imgp, CAST_USER_ADDR_T(inject_env), UIO_SYSSPACE, TRUE);
++		if (error) {
++			goto bad;
++		}
++		if (imgp->ip_argspace < new_ptr_size) {
++			error = E2BIG;
++			goto bad;
++		}
++		imgp->ip_argspace -= new_ptr_size;
+ 		imgp->ip_envc++;
+ 	}
+ 
 --- a/iokit/conf/files.arm64
 +++ b/iokit/conf/files.arm64
 @@ -15,6 +15,9 @@
@@ -288,7 +385,19 @@
  	bool          fPowerOff;      /* RequestPowerChange(0) */
  	uint32_t      fFadeStep;      /* fade-out steps done while off */
  
-@@ -244,6 +248,10 @@
+@@ -158,6 +162,11 @@
+ };
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
++
++/* The IOAcceleratorES stub (named "sgx") and its metal=1 property gate live in
++ * iokit/Kernel/MiniIOMobileFramebuffer.cpp; this publishes one for the SweetFramebuffer
++ * path, whose MiniIOMobileFramebufferStart is never called. */
++extern "C" void MiniIOPublishAccelerator(IOService * provider);
+ 
+ bool
+ AppleCLCD::start(IOService *provider)
+@@ -244,6 +253,10 @@
  		OSSafeReleaseNULL(fVsync);
  		return false;
  	}
@@ -299,7 +408,15 @@
  	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
  	fPresentTimer->setTimeoutUS(fPresentPeriodUS);
  	IOLog("SWEET PACE: independent vsync 60 Hz, panel-copy target %u Hz\n", hz);
-@@ -263,9 +271,15 @@
+@@ -252,6 +265,7 @@
+ 	setProperty("external", false);
+ 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
+ 	registerService();
++	MiniIOPublishAccelerator(provider);
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+ 	IOLog("SWEET FB: %s %ux%u content at %d,%d\n", fScale ? "scaling to" : "cropping at",
+@@ -263,9 +277,15 @@
  AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  {
  	AppleCLCD *fb = (AppleCLCD *)owner;
@@ -318,7 +435,7 @@
  	uint64_t now = mach_absolute_time();
  	uint64_t gap = fb->fLastVsync ? now - fb->fLastVsync : 0;
  	fb->fLastVsync = now;
-@@ -297,9 +311,14 @@
+@@ -297,9 +317,14 @@
  AppleCLCD::presentFired(OSObject *owner, IOTimerEventSource *sender)
  {
  	AppleCLCD *fb = (AppleCLCD *)owner;
@@ -336,7 +453,7 @@
  	IOLockLock(fb->fLock);
  	if (fb->fPowerOff) {
  		/* Fade out: halve every channel each vsync, then black, then idle. */
-@@ -441,6 +460,29 @@
+@@ -441,6 +466,29 @@
  			return;
  		}
  	}
@@ -366,7 +483,7 @@
  }
  
  void
-@@ -611,6 +653,12 @@
+@@ -611,6 +659,12 @@
  			if (py1 > (int32_t)fHeight) {
  				py1 = (int32_t)fHeight;
  			}
@@ -379,7 +496,7 @@
  			uint64_t xstep = ((uint64_t)fLogicalW << 16) / fContentW;
  			for (int32_t y = py0; y < py1; y++) {
  				int32_t ly = (int32_t)(((int64_t)(y - fOffY) * fLogicalH) / fContentH);
-@@ -621,6 +669,14 @@
+@@ -621,6 +675,14 @@
  				uint32_t *drow = (uint32_t *)(fPixels + (uint64_t)y * fRowBytes);
  				uint64_t xpos = (uint64_t)(px0 - fOffX) * xstep;
  				for (int32_t x = px0; x < px1; x++) {
@@ -394,7 +511,7 @@
  					int32_t lx = (int32_t)(xpos >> 16);
  					xpos += xstep;
  					if (lx < dx || lx >= dx + w) {
-@@ -648,24 +704,47 @@
+@@ -648,24 +710,47 @@
  			if (py1 > (int32_t)fHeight) {
  				py1 = (int32_t)fHeight;
  			}
@@ -10600,7 +10717,7 @@ diff --git a/iokit/Kernel/RedwoodGPU.cpp b/iokit/Kernel/RedwoodGPU.cpp
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/RedwoodGPU.cpp
-@@ -0,0 +1,1429 @@
+@@ -0,0 +1,1431 @@
 +/*
 + * RedwoodGPU: the phone's Adreno for programs to draw with.
 + *
@@ -11045,6 +11162,8 @@ new file mode 100644
 +	if (!gpu->start(provider)) {
 +		gpu->detach(provider);
 +		IOLog("RedwoodGPU: the service did not start\n");
++	} else {
++		IOLog("RedwoodGPU: service registered; GPU is kept for user space\n");
 +	}
 +	gpu->release();
 +}
@@ -14135,7 +14254,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
-@@ -0,0 +1,2904 @@
+@@ -0,0 +1,2912 @@
 +/*
 + * MiniIOMobileFramebuffer: a stand-in for Apple's display driver family, as seen by
 + * DipperMobileFramebuffer.framework (and through it by CoreAnimation's window server).
@@ -17002,6 +17121,14 @@ new file mode 100644
 +		}
 +	}
 +	OSSafeReleaseNULL(accelerator);
++}
++
++/* For the SweetFramebuffer build, whose AppleCLCD is the display service instead of
++ * DipperMobileFramebuffer: publish the same "sgx" accelerator stub under its provider. */
++extern "C" void
++MiniIOPublishAccelerator(IOService * provider)
++{
++	publishAccelerator(provider);
 +}
 +
 +/*
