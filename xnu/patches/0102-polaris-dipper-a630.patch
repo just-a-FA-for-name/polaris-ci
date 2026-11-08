@@ -803,9 +803,11 @@
  			for (unsigned slot = 0; slot < pt_fingers; ++slot) {
  				if (!present[slot]) {
  					if (pt_down[slot]) {
+
+
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -367,6 +367,31 @@ SECURITY_READ_ONLY_LATE(static ptov_table_entry)        ptov_table[PTOV_TABLE_SI
+@@ -367,6 +367,33 @@ SECURITY_READ_ONLY_LATE(static ptov_table_entry)        ptov_table[PTOV_TABLE_SI
  SECURITY_READ_ONLY_LATE(static boolean_t)               kva_active = FALSE;
  
  
@@ -818,9 +820,11 @@
 +phystokv_bad_pa(const char * who, pmap_paddr_t pa)
 +{
 +	uintptr_t *fp = (uintptr_t *) __builtin_frame_address(0);
++	extern pmap_paddr_t vm_first_phys, vm_last_phys;
 +
-+	printf("%s: bad PA 0x%llx, slide %#lx, callers:", who, (unsigned long long) pa,
-+	    (unsigned long) vm_kernel_slide);
++	printf("%s: bad PA 0x%llx, slide %#lx, vmfp %#llx vmlp %#llx, callers:", who,
++	    (unsigned long long) pa, (unsigned long) vm_kernel_slide,
++	    (unsigned long long) vm_first_phys, (unsigned long long) vm_last_phys);
 +	for (int i = 0; i < 12 && fp != NULL && (((uintptr_t) fp) & 0xf) == 0; i++) {
 +		uintptr_t lr = fp[1];
 +		uintptr_t *next = (uintptr_t *) fp[0];
@@ -837,7 +841,7 @@
  vm_map_address_t
  phystokv(pmap_paddr_t pa)
  {
-@@ -377,6 +402,7 @@ phystokv(pmap_paddr_t pa)
+@@ -377,6 +404,7 @@ phystokv(pmap_paddr_t pa)
  		}
  	}
  	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
@@ -845,7 +849,7 @@
  		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
  		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
  	}
-@@ -402,6 +428,7 @@ phystokv_range(pmap_paddr_t pa, vm_size_t *max_len)
+@@ -402,6 +430,7 @@ phystokv_range(pmap_paddr_t pa, vm_size_t *max_len)
  		*max_len = len;
  	}
  	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
@@ -853,6 +857,128 @@
  		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
  		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
  	}
+
+
+
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -1782,6 +1782,8 @@ ml_static_mfree(
+ 	ppnum_t     ppn;
+ 	uint32_t    freed_pages = 0;
+ 	uint32_t    freed_kernelcache_pages = 0;
++	uint32_t    bad_page_cnt = 0;
++	extern unsigned long gPhysBase;
+ 
+ 
+ 	/* It is acceptable (if bad) to fail to free. */
+@@ -1808,6 +1810,12 @@ ml_static_mfree(
+ 
+ 			paddr_cur = ptoa(ppn);
+ 
++			if (__improbable(paddr_cur < gPhysBase)) {
++				printf("BADMFREE: va=%p -> ppn=0x%x pa=0x%llx gpb=0x%lx\n",
++				    (void *)vaddr_cur, ppn, (unsigned long long)paddr_cur, gPhysBase);
++				bad_page_cnt++;
++				continue;
++			}
+ 
+ 			vm_page_create(ppn, (ppn + 1));
+ 			freed_pages++;
+
+
+
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -10548,6 +10548,13 @@ pmap_set_cache_attributes_priv(
+ 		return;                         /* Not a managed page. */
+ 	}
+ 
++	if (__improbable(paddr < gPhysBase)) {
++		printf("BADPA-PSCA: pn=0x%x pa=0x%llx gpb=0x%lx vmfp=0x%llx vmlp=0x%llx\n",
++		    pn, (unsigned long long)paddr, gPhysBase,
++		    (unsigned long long)vm_first_phys, (unsigned long long)vm_last_phys);
++		return;
++	}
++
+ 	if (cacheattr & VM_WIMG_USE_DEFAULT) {
+ 		cacheattr = VM_WIMG_DEFAULT;
+ 	}
+
+
+
+--- a/osfmk/vm/vm_object.c
++++ b/osfmk/vm/vm_object.c
+@@ -5296,6 +5296,19 @@ vm_object_populate_with_private(
+ 
+ 	base_page = phys_page;
+ 
++	{
++		extern uint64_t vm_first_phys, vm_last_phys;
++		extern unsigned long gPhysBase;
++		uint64_t ppa = ((uint64_t)phys_page) << PAGE_SHIFT;
++		if (__improbable(ppa < gPhysBase)) {
++			printf("BADPOP: obj=%p off=0x%llx pn=0x%x pa=0x%llx sz=0x%x vmfp=0x%llx vmlp=0x%llx gpb=0x%lx\n",
++			    (void*)object, (unsigned long long)offset, phys_page,
++			    (unsigned long long)ppa, (unsigned int)size,
++			    (unsigned long long)vm_first_phys,
++			    (unsigned long long)vm_last_phys, gPhysBase);
++		}
++	}
++
+ 	vm_object_lock(object);
+ 
+ 	if (!object->phys_contiguous) {
+@@ -7079,6 +7092,16 @@ pager_map_to_phys_contiguous(
+ 		goto out;
+ 	}
+ 
++	{
++		extern unsigned long gPhysBase;
++		uint64_t ppa = ((uint64_t)page_num) << PAGE_SHIFT;
++		if (__improbable(ppa < gPhysBase)) {
++			printf("BADPMAP: va=0x%llx -> pn=0x%x pa=0x%llx sz=0x%x obj=%p\n",
++			    (unsigned long long)base_vaddr, page_num,
++			    (unsigned long long)ppa, (unsigned int)size, (void*)object);
++		}
++	}
++
+ 	pager_object = memory_object_control_to_vm_object(object);
+ 
+ 	if (!pager_object) {
+@@ -7247,6 +7270,8 @@ void
+ vm_object_change_wimg_mode(vm_object_t object, unsigned int wimg_mode)
+ {
+ 	vm_page_t p;
++	extern uint64_t vm_first_phys, vm_last_phys;
++	extern unsigned long gPhysBase;
+ 
+ 	vm_object_lock_assert_exclusive(object);
+ 
+@@ -7254,7 +7279,22 @@ vm_object_change_wimg_mode(vm_object_t object, unsigned int wimg_mode)
+ 
+ 	vm_page_queue_iterate(&object->memq, p, vmp_listq) {
+ 		if (!p->vmp_fictitious) {
+-			pmap_set_cache_attributes(VM_PAGE_GET_PHYS_PAGE(p), wimg_mode);
++			ppnum_t wpn = VM_PAGE_GET_PHYS_PAGE(p);
++			uint64_t wpa = ((uint64_t)wpn) << PAGE_SHIFT;
++			if (__improbable(wpa < gPhysBase)) {
++				printf("BADPG: obj=%p p=%p pn=0x%x pa=0x%llx qs=%d prv=%d pm=%d unu=%d hsh=%d busy=%d off=0x%llx | int=%d prv=%d phc=%d cps=%d wimg=0x%x po=0x%llx rpc=%d wpc=%d | vmfp=0x%llx vmlp=0x%llx gpb=0x%lx\n",
++				    (void*)object, (void*)p, wpn, (unsigned long long)wpa,
++				    p->vmp_q_state, p->vmp_private, p->vmp_pmapped, p->vmp_unusual,
++				    p->vmp_hashed, p->vmp_busy, (unsigned long long)p->vmp_offset,
++				    object->internal, object->private, object->phys_contiguous,
++				    object->copy_strategy, object->wimg_bits,
++				    (unsigned long long)object->paging_offset,
++				    object->resident_page_count, object->wired_page_count,
++				    (unsigned long long)vm_first_phys, (unsigned long long)vm_last_phys,
++				    gPhysBase);
++				continue;
++			}
++			pmap_set_cache_attributes(wpn, wimg_mode);
+ 		}
+ 	}
+ 	if (wimg_mode == VM_WIMG_USE_DEFAULT) {
+
 diff --git a/bsd/dev/mi8_adreno.c b/bsd/dev/mi8_adreno.c
 new file mode 100644
 --- /dev/null
@@ -5393,7 +5519,7 @@ new file mode 100644
 +
 +/* ---- autonomous loop: reset back to fastboot without anyone pressing keys -----------------
 + * The shim's reset() is the proven sequence on this phone: write the ABL boot-mode cookie in
-+ * IMEM, then PSCI SYSTEM_RESET — nothing else. Earlier iterations wrote the PMIC PON
++ * IMEM, then PSCI SYSTEM_RESET ??nothing else. Earlier iterations wrote the PMIC PON
 + * PS_HOLD_RESET_CTL/soft-reboot-spare registers over SPMI to force a hard reset; on polaris
 + * that cleared IMEM and the cookie, so ABL booted normally instead of entering fastboot.
 + * The shim never touches PON: the default warm reset preserves IMEM and lands in fastboot.
@@ -5478,7 +5604,7 @@ new file mode 100644
 +	PE_halt_restart = mi8_halt_restart;
 +	printf("mi8gpu: rb halt_restart armed; entering bsd_timeout\n");
 +	/* bsd_timeout runs on the callout thread: it fires even when a dedicated
-+	 * thread would never be scheduled — the thread version randomly did not. */
++	 * thread would never be scheduled ??the thread version randomly did not. */
 +	bsd_timeout(mi8_rb_fire, NULL, &ts);
 +	printf("mi8gpu: reboot arm: %u s then reset to fastboot (cookie va %#lx, halt_restart armed)\n",
 +	    secs, mi8_imem);
@@ -5901,7 +6027,7 @@ new file mode 100644
 + * reg is a WORD offset from the GPU mapping; only the writer multiplies by 4.
 + * Caller must already own GX power/clocks, the GMU OOB vote, and security setup.
 + * This is the cold/full HWCG path: RBBM_CLOCK_CNTL != 0x8aa8aa02, CP halted.
-+ * 推测: that cold-state precondition and the Linux SDM845 profile match this boot.
++ * ???: that cold-state precondition and the Linux SDM845 profile match this boot.
 + * No register read or wait belongs here; true means writes issued, not GPU ready.
 + *
 + * Required Linux ordering, with table half-open ranges below:
@@ -14971,7 +15097,7 @@ new file mode 100644
 +/*
 + * fb_swapwait=1 (EXP-0134): SwapWait (selector 6, which the window server calls for every swap it made) returns once the
 + * DPU has taken that swap's frame (or a later one), at most 40 ms on, instead of at once: what a native framebuffer is
-+ * thought to do [寰呴獙璇乚. 0: at once.
++ * thought to do [???????? 0: at once.
 + */
 +static TUNABLE(uint32_t, gSwapWait, "fb_swapwait", 0);
 +/*
