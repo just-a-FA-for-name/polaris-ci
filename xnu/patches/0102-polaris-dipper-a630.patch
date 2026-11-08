@@ -929,7 +929,7 @@
 +	 * managed-page gate; callers feeding it a page outside DRAM panic down
 +	 * in phystokv. Catch it here, name the caller, skip the flush. */
 +	pmap_paddr_t spa = (pmap_paddr_t)pp << PAGE_SHIFT;
-+	if (__improbable(spa < gPhysBase || spa >= vm_last_phys)) {
++	if (__improbable(spa < gPhysBase || spa >= vm_last_phys || spa < 0xb0000000ULL)) {
 +		printf("BADSYNC: pp=0x%x pa=0x%llx gpb=0x%lx vmfp=0x%llx vmlp=0x%llx caller=%p\n",
 +		    pp, (unsigned long long)spa, gPhysBase,
 +		    (unsigned long long)vm_first_phys, (unsigned long long)vm_last_phys,
@@ -943,7 +943,7 @@
  		return;                         /* Not a managed page. */
  	}
  
-+	if (__improbable(paddr < gPhysBase)) {
++	if (__improbable(paddr < gPhysBase || paddr < 0xb0000000ULL)) {
 +		printf("BADPA-PSCA: pn=0x%x pa=0x%llx gpb=0x%lx vmfp=0x%llx vmlp=0x%llx\n",
 +		    pn, (unsigned long long)paddr, gPhysBase,
 +		    (unsigned long long)vm_first_phys, (unsigned long long)vm_last_phys);
@@ -1008,7 +1008,7 @@
 -			pmap_set_cache_attributes(VM_PAGE_GET_PHYS_PAGE(p), wimg_mode);
 +			ppnum_t wpn = VM_PAGE_GET_PHYS_PAGE(p);
 +			uint64_t wpa = ((uint64_t)wpn) << PAGE_SHIFT;
-+			if (__improbable(wpa < gPhysBase)) {
++			if (__improbable(wpa < gPhysBase || wpa < 0xb0000000ULL)) {
 +				printf("BADPG: obj=%p p=%p pn=0x%x pa=0x%llx qs=%d prv=%d pm=%d unu=%d hsh=%d busy=%d off=0x%llx | int=%d prv=%d phc=%d cps=%d wimg=0x%x po=0x%llx rpc=%d wpc=%d | vmfp=0x%llx vmlp=0x%llx gpb=0x%lx\n",
 +				    (void*)object, (void*)p, wpn, (unsigned long long)wpa,
 +				    p->vmp_q_state, p->vmp_private, p->vmp_pmapped, p->vmp_unusual,
@@ -1025,7 +1025,6 @@
  		}
  	}
  	if (wimg_mode == VM_WIMG_USE_DEFAULT) {
-
 diff --git a/bsd/dev/mi8_adreno.c b/bsd/dev/mi8_adreno.c
 new file mode 100644
 --- /dev/null
