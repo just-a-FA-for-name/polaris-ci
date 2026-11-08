@@ -598,7 +598,7 @@ diff --git a/bsd/dev/mi8_adreno.c b/bsd/dev/mi8_adreno.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/mi8_adreno.c
-@@ -0,0 +1,5014 @@
+@@ -0,0 +1,5021 @@
 +/*
 + * The GPU of the Xiaomi Mi 8 (dipper, SDM845): an Adreno 630 (chip id 0x06030001, "qcom,chipid" of the phone's
 + * own device tree), woken step by step. Only with boot-arg mi8gpu=N, which performs steps 1 to N and stops.
@@ -5142,7 +5142,11 @@ new file mode 100644
 + * the phone OFF. If TZ declines the SMC the kernel stays up and says so. Arming at probe
 + * entry also covers a panic: any warm reset afterwards lands in fastboot, where the rig
 + * boots TWRP and pulls the ring. */
-+#define MI8_IMEM_RESTART_REASON 0x146aa65cUL
++/* dipper's IMEM lives at a different base than polaris's: the stock polaris
++ * DTB has qcom,msm-imem@146bf000 with restart_reason@65c = 0x146bf65c. Using
++ * dipper's 0x146aa65c on polaris hits unmapped bus and stalls the writing CPU
++ * forever (no abort, no timeout). mi8gpu_imem=<pa> overrides for experiments. */
++#define MI8_IMEM_RESTART_REASON 0x146bf65cUL
 +#define MI8_RESTART_BOOTLOADER  0x77665500U
 +#define MI8_PSCI_SYSTEM_RESET   0x84000009UL
 +
@@ -5199,12 +5203,15 @@ new file mode 100644
 +	/* IMEM is outside the physmap: phystokv() PANICS on it (Illegal PA,
 +	 * arm_vm_init.c bounds check -- EXP polaris: panic right after
 +	 * "arming callout reset"). Map it as device memory instead. */
-+	vm_offset_t page = ml_io_map(MI8_IMEM_RESTART_REASON & ~0xfffUL, 0x1000);
++	uint64_t imem_pa = MI8_IMEM_RESTART_REASON;
++	(void)PE_parse_boot_argn("mi8gpu_imem", &imem_pa, sizeof(imem_pa));
++	vm_offset_t page = ml_io_map(imem_pa & ~0xfffUL, 0x1000);
 +
-+	mi8_imem = page ? page + (MI8_IMEM_RESTART_REASON & 0xfffUL) : 0;
++	mi8_imem = page ? page + (imem_pa & 0xfffUL) : 0;
 +	mi8_cookie_ok = mi8_imem != 0;
-+	printf("mi8gpu: rb imem ml_io_map page=%#lx cookie=%u\n", page, mi8_cookie_ok);
++	printf("mi8gpu: rb imem ml_io_map pa=%#llx page=%#lx cookie=%u\n", imem_pa, page, mi8_cookie_ok);
 +	if (mi8_cookie_ok) {
++		printf("mi8gpu: rb cookie read-before %#x\n", *(volatile uint32_t *)mi8_imem);
 +		printf("mi8gpu: rb cookie store begin\n");
 +		*(volatile uint32_t *)mi8_imem = MI8_RESTART_BOOTLOADER;
 +		printf("mi8gpu: rb cookie readback %#x\n", *(volatile uint32_t *)mi8_imem);
