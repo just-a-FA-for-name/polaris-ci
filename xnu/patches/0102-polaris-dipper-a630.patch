@@ -28,7 +28,7 @@
  	sweet_usb_probe();
  	return 0;
  }
-@@ -746,53 +748,88 @@
+@@ -746,53 +748,110 @@
  	uint64_t total, seq;
  };
  
@@ -85,10 +85,19 @@
 +
 +extern unsigned panic_active(void);
 +
++static int sweet_log_busy_reported;
++
 +void
 +sweet_log_sync(void)
 +{
-+	if (!sweet_log_live || sweet_log_busy) {
++	if (!sweet_log_live) {
++		return;
++	}
++	if (sweet_log_busy) {
++		if (!sweet_log_busy_reported) {
++			sweet_log_busy_reported = 1;
++			printf("SWEET LOG: sync skipped: another flush still holds the lock\n");
++		}
 +		return;
 +	}
 +	sweet_log_busy = 1;
@@ -154,19 +163,50 @@
  			return;
  		}
 -		flushed = total;
++	}
++}
++
++/* Periodic flush on the callout thread: fires even when a dedicated thread
++ * would never be scheduled (kernel_thread_start randomly is not, on this
++ * platform), and a blocked flush skips itself through the busy flag. */
++static void
++sweet_log_callout(__unused void *p1, __unused void *p2)
++{
++	sweet_log_sync();
++	if (sweet_log_live) {
++		struct timespec ts = { (time_t)sweet_log_secs, 0 };
++		bsd_timeout(sweet_log_callout, NULL, &ts);
  	}
  }
  
-@@ -810,6 +847,12 @@
+@@ -801,15 +860,30 @@
+ {
+ 	uint32_t on = 1;
+ 	thread_t thread;
++	struct timespec ts;
+ 
+ 	PE_parse_boot_argn("sweetlog", &on, sizeof(on));
+ 	if (!on || !su.writable || su.nblocks < 2 * SWEET_LOG_BLOCKS) {
++		printf("SWEET LOG: disabled (on=%u writable=%u nblocks=%llu)\n",
++		    on, su.writable, su.nblocks);
+ 		return;
+ 	}
+ 	PE_parse_boot_argn("ufslogsecs", &sweet_log_secs, sizeof(sweet_log_secs));
  	if (sweet_log_secs == 0 || sweet_log_secs > 60) {
  		sweet_log_secs = SWEET_LOG_SECS;
  	}
 +	printf("SWEET LOG: console log to the last %u KiB of the partition (block 0x%llx)\n",
 +	    SWEET_LOG_BLOCKS * UFS_BLOCK >> 10,
 +	    su.first_block + su.nblocks - SWEET_LOG_BLOCKS);
-+	/* Arm sweet_log_sync() whether or not the thread comes up (kernel_thread_start
-+	 * has been seen to silently never run on this platform). */
++	/* Arm sweet_log_sync() whether or not any deferred flush comes up
++	 * (kernel_thread_start has been seen to silently never run on this
++	 * platform); land the header on disk immediately so later output can
++	 * be attributed even if everything else then dies. */
 +	sweet_log_live = 1;
++	sweet_log_sync();
++	ts.tv_sec = (time_t)sweet_log_secs;
++	ts.tv_nsec = 0;
++	bsd_timeout(sweet_log_callout, NULL, &ts);
  	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
  	}
@@ -558,7 +598,7 @@ diff --git a/bsd/dev/mi8_adreno.c b/bsd/dev/mi8_adreno.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/mi8_adreno.c
-@@ -0,0 +1,4960 @@
+@@ -0,0 +1,4996 @@
 +/*
 + * The GPU of the Xiaomi Mi 8 (dipper, SDM845): an Adreno 630 (chip id 0x06030001, "qcom,chipid" of the phone's
 + * own device tree), woken step by step. Only with boot-arg mi8gpu=N, which performs steps 1 to N and stops.
@@ -5175,11 +5215,43 @@ new file mode 100644
 +	    secs, mi8_imem);
 +}
 +
++/* kernel_thread_start has been seen to return success yet never schedule the
++ * thread on this platform; the watchdog callout notices and retries. */
++static volatile int mi8_probe_started, mi8_probe_retries;
++
++static void
++mi8_adreno_thread(void *parameter, __unused wait_result_t result);
++
++static void
++mi8_probe_watch(void *parameter, __unused void *q)
++{
++	thread_t thread;
++	struct timespec ts = { (time_t)8, 0 };
++
++	if (mi8_probe_started || mi8_probe_retries >= 6) {
++		if (!mi8_probe_started) {
++			printf("mi8gpu: probe thread never started after %u retries\n", mi8_probe_retries);
++		}
++		return;
++	}
++	mi8_probe_retries++;
++	printf("mi8gpu: probe thread not started; retry %u\n", mi8_probe_retries);
++	if (kernel_thread_start(mi8_adreno_thread, parameter, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++	bsd_timeout(mi8_probe_watch, parameter, &ts);
++}
++
 +static void
 +mi8_adreno_thread(void *parameter, __unused wait_result_t result)
 +{
 +	uint32_t last = (uint32_t)(uintptr_t)parameter;
 +
++	if (__sync_fetch_and_add(&mi8_probe_started, 1) != 0) {
++		printf("mi8gpu: duplicate probe thread; exiting\n");
++		thread_terminate(current_thread());
++		return;
++	}
 +	gmu_last_step = last;
 +
 +	{
@@ -5395,6 +5467,10 @@ new file mode 100644
 +	}
 +	if (kernel_thread_start(mi8_adreno_thread, (void *)(uintptr_t)last, &thread) == KERN_SUCCESS) {
 +		thread_deallocate(thread);
++	}
++	{
++		struct timespec ts = { (time_t)8, 0 };
++		bsd_timeout(mi8_probe_watch, (void *)(uintptr_t)last, &ts);
 +	}
 +}
 +
