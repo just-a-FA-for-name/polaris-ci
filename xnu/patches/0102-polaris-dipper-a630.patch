@@ -29,7 +29,7 @@
  	sweet_usb_probe();
  	return 0;
  }
-@@ -746,53 +748,110 @@ struct sweet_log_header {
+@@ -746,53 +748,150 @@ struct sweet_log_header {
  	uint64_t total, seq;
  };
  
@@ -108,6 +108,44 @@
 -			bzero(bounce, UFS_BLOCK);
 -			memcpy(bounce, &h, sizeof(h));
 -			error = ufs_write_blocks(base, 1);
++/* POLARIS: panic-path emergency marker. The normal sync path can lose the
++ * panic text entirely when panic hits while another CPU holds the ufs lock
++ * (try_lock fails, the line is skipped silently). This writes a SWEETPAN
++ * header plus a snapshot of the ring tail straight to the log header block
++ * with NO lock -- in panic the other CPUs are stopped anyway. The mark also
++ * proves a panic happened when the screen can't be photographed. */
++void sweet_log_panic_mark(void);
++
++void
++sweet_log_panic_mark(void)
++{
++	if (!sweet_log_live) {
++		return;
++	}
++	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	void *bounce = (void *)(su.dma + DMA_BOUNCE);
++	uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
++	struct {
++		struct sweet_log_header h;
++		uint64_t tail_off;
++		char tail[UFS_BLOCK - sizeof(struct sweet_log_header) - sizeof(uint64_t)];
++	} m;
++	memset(&m, 0, sizeof(m));
++	memcpy(m.h.magic, "SWEETPAN", 8);
++	m.h.version = 1;
++	m.h.size = SWEET_LOG_SIZE;
++	m.h.total = total;
++	m.h.seq = ++sweet_log_seq;
++	uint32_t n = (uint32_t)MIN((uint64_t)sizeof(m.tail), total);
++	m.tail_off = total - n;
++	for (uint32_t i = 0; i < n; i++) {
++		m.tail[i] = sweet_log_ring[(m.tail_off + i) % SWEET_LOG_SIZE];
++	}
++	memcpy(bounce, &m, sizeof(m));
++	(void)ufs_write_blocks(base, 1);
++	(void)ufs_sync_cache();
++}
++
 +/* Commit the console ring to its disk window right now, in the caller's
 + * context. Safe to call once sweet_log_start() armed it; used by checkpoints
 + * that want their console output on disk even if the machine dies immediately
@@ -140,6 +178,8 @@
 +		if (lck_mtx_try_lock(&sweet_ufs_lock)) {
 +			(void)sweet_log_flush_locked();
 +			lck_mtx_unlock(&sweet_ufs_lock);
++		} else {
++			sweet_log_panic_mark();
  		}
 +	} else {
 +		lck_mtx_lock(&sweet_ufs_lock);
@@ -177,7 +217,7 @@
  	}
  }
  
-@@ -801,15 +860,30 @@ sweet_log_start(void)
+@@ -801,15 +900,30 @@ sweet_log_start(void)
  {
  	uint32_t on = 1;
  	thread_t thread;
@@ -803,8 +843,6 @@
  			for (unsigned slot = 0; slot < pt_fingers; ++slot) {
  				if (!present[slot]) {
  					if (pt_down[slot]) {
-
-
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
 @@ -367,6 +367,33 @@ SECURITY_READ_ONLY_LATE(static ptov_table_entry)        ptov_table[PTOV_TABLE_SI
@@ -857,9 +895,6 @@
  		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
  		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
  	}
-
-
-
 --- a/osfmk/arm64/machine_routines.c
 +++ b/osfmk/arm64/machine_routines.c
 @@ -1782,6 +1782,8 @@ ml_static_mfree(
@@ -884,12 +919,27 @@
  
  			vm_page_create(ppn, (ppn + 1));
  			freed_pages++;
-
-
-
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
-@@ -10548,6 +10548,13 @@ pmap_set_cache_attributes_priv(
+@@ -6881,6 +6881,17 @@ void
+ pmap_sync_page_attributes_phys(
+ 	ppnum_t pp)
+ {
++	/* POLARIS: this routine flushes a physical page's cachelines with no
++	 * managed-page gate; callers feeding it a page outside DRAM panic down
++	 * in phystokv. Catch it here, name the caller, skip the flush. */
++	pmap_paddr_t spa = (pmap_paddr_t)pp << PAGE_SHIFT;
++	if (__improbable(spa < gPhysBase || spa >= vm_last_phys)) {
++		printf("BADSYNC: pp=0x%x pa=0x%llx gpb=0x%lx vmfp=0x%llx vmlp=0x%llx caller=%p\n",
++		    pp, (unsigned long long)spa, gPhysBase,
++		    (unsigned long long)vm_first_phys, (unsigned long long)vm_last_phys,
++		    __builtin_return_address(0));
++		return;
++	}
+ 	flush_dcache((vm_offset_t) (pp << PAGE_SHIFT), PAGE_SIZE, TRUE);
+ }
+ 
+@@ -10548,6 +10559,13 @@ pmap_set_cache_attributes_priv(
  		return;                         /* Not a managed page. */
  	}
  
@@ -903,9 +953,6 @@
  	if (cacheattr & VM_WIMG_USE_DEFAULT) {
  		cacheattr = VM_WIMG_DEFAULT;
  	}
-
-
-
 --- a/osfmk/vm/vm_object.c
 +++ b/osfmk/vm/vm_object.c
 @@ -5296,6 +5296,19 @@ vm_object_populate_with_private(
@@ -17808,3 +17855,16 @@ new file mode 100644
 +	}
 +	fb->release();
 +}
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1075,6 +1075,10 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
+ #if defined(SWEET)
+ 	/* No CPU/thread/debugger state is required for this first panic copy. */
+ 	sweet_early_panic(panic_format_str, panic_args);
++	{
++		extern void sweet_log_panic_mark(void);
++		sweet_log_panic_mark();
++	}
+ #endif
+ 
+ #if defined(__x86_64__) && (DEVELOPMENT || DEBUG)
