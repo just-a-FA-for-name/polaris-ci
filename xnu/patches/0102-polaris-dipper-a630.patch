@@ -598,7 +598,7 @@ diff --git a/bsd/dev/mi8_adreno.c b/bsd/dev/mi8_adreno.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/mi8_adreno.c
-@@ -0,0 +1,4996 @@
+@@ -0,0 +1,5014 @@
 +/*
 + * The GPU of the Xiaomi Mi 8 (dipper, SDM845): an Adreno 630 (chip id 0x06030001, "qcom,chipid" of the phone's
 + * own device tree), woken step by step. Only with boot-arg mi8gpu=N, which performs steps 1 to N and stops.
@@ -5205,14 +5205,24 @@ new file mode 100644
 +	mi8_cookie_ok = mi8_imem != 0;
 +	printf("mi8gpu: rb imem ml_io_map page=%#lx cookie=%u\n", page, mi8_cookie_ok);
 +	if (mi8_cookie_ok) {
++		printf("mi8gpu: rb cookie store begin\n");
 +		*(volatile uint32_t *)mi8_imem = MI8_RESTART_BOOTLOADER;
++		printf("mi8gpu: rb cookie readback %#x\n", *(volatile uint32_t *)mi8_imem);
 +	}
 +	PE_halt_restart = mi8_halt_restart;
++	printf("mi8gpu: rb halt_restart armed; entering bsd_timeout\n");
 +	/* bsd_timeout runs on the callout thread: it fires even when a dedicated
 +	 * thread would never be scheduled — the thread version randomly did not. */
 +	bsd_timeout(mi8_rb_fire, NULL, &ts);
 +	printf("mi8gpu: reboot arm: %u s then reset to fastboot (cookie va %#lx, halt_restart armed)\n",
 +	    secs, mi8_imem);
++}
++
++static void
++mi8_rb_thread(void *parameter, __unused wait_result_t result)
++{
++	mi8_rb_arm((uint32_t)(uintptr_t)parameter);
++	thread_terminate(current_thread());
 +}
 +
 +/* kernel_thread_start has been seen to return success yet never schedule the
@@ -5256,10 +5266,18 @@ new file mode 100644
 +
 +	{
 +		uint32_t rb = 0;
++		thread_t thread;
 +
 +		if (PE_parse_boot_argn("mi8gpu_rbsec", &rb, sizeof(rb)) && rb) {
 +			printf("mi8gpu: rbsec=%u parsed; arming callout reset\n", rb);
-+			mi8_rb_arm(rb);
++			/* The IMEM cookie store may stall the CPU if that bus segment is
++			 * unreachable: arm from a disposable thread so the probe (and the
++			 * GPU steps after it) survives the hang. */
++			if (kernel_thread_start(mi8_rb_thread, (void *)(uintptr_t)rb, &thread) == KERN_SUCCESS) {
++				thread_deallocate(thread);
++			} else {
++				mi8_rb_arm(rb);
++			}
 +		}
 +	}
 +
