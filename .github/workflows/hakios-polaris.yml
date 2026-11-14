@@ -81,9 +81,13 @@ jobs:
             cp -a "$HOME/theos/toolchain/linux/iphone/ios-arm64e-clang-toolchain/." "$HOME/theos/toolchain/linux/iphone/"
           fi
           test -x "$HOME/theos/toolchain/linux/iphone/bin/ld"
-          # every shared library the prebuilt cctools needs must resolve
+          # every shared library the prebuilt cctools needs must resolve; the
+          # toolchain libs live in ../lib (rpath misses some), so put them on
+          # LD_LIBRARY_PATH for the check and for the kernel build after it
+          echo "LD_LIBRARY_PATH=$HOME/theos/toolchain/linux/iphone/lib" >> "$GITHUB_ENV"
           for b in "$HOME/theos/toolchain/linux/iphone/bin"/*; do
-            ldd "$b" 2>/dev/null | grep -Hn 'not found' && exit 1
+            LD_LIBRARY_PATH="$HOME/theos/toolchain/linux/iphone/lib" ldd "$b" 2>/dev/null | \
+              grep -Hn 'not found' && { echo "missing libs for $b"; exit 1; }
           done; true
           git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks "$HOME/theos/sdks-git"
           git -C "$HOME/theos/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
