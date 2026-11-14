@@ -1,4 +1,6 @@
 gic_vtimer=19
+ddr=0
+soc_cmd_db=0x85fe0000
 soc_ipa_base=0x1e40000
 soc_gsi_base=0x1e04000
 soc_aoss=0xc300000
