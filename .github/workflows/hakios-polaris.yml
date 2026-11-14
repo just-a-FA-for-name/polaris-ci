@@ -142,4 +142,7 @@ jobs:
           name: hakios-polaris
           path: |
             kernel-tree/out/
+            kernel-tree/hakios-kernel
+            kernel-tree/xnuloader/loader.efi
+            kernel-tree/u-boot/build-polaris/u-boot.bin
             kernel-tree/xnu-build.log
