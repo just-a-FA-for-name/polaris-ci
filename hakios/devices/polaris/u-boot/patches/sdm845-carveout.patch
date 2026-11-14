@@ -1,6 +1,6 @@
 --- a/arch/arm/mach-snapdragon/board.c
 +++ b/arch/arm/mach-snapdragon/board.c
-@@ -752,5 +752,20 @@
+@@ -752,5 +752,18 @@
  		carve_out_reserved_memory();
  		debug("carveout time: %lums\n", get_timer(carveout_start));
  	}
