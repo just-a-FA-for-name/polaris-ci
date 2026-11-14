@@ -74,11 +74,17 @@ jobs:
         run: |
           set -e
           git clone -q --depth 1 https://github.com/theos/theos "$HOME/theos"
-          mkdir -p "$HOME/theos/toolchain/linux/iphone" "$HOME/theos/sdks"
-          curl -fL -o /tmp/tc.tar.lzma https://github.com/sbingner/llvm-project/releases/download/v10.0.0-2/linux-ios-arm64e-clang-toolchain.tar.lzma
-          tar -C "$HOME/theos/toolchain/linux/iphone" --lzma -xf /tmp/tc.tar.lzma
-          if [ -d "$HOME/theos/toolchain/linux/iphone/ios-arm64e-clang-toolchain" ]; then
-            cp -a "$HOME/theos/toolchain/linux/iphone/ios-arm64e-clang-toolchain/." "$HOME/theos/toolchain/linux/iphone/"
+          mkdir -p "$HOME/theos/toolchain" "$HOME/theos/sdks"
+          # the current theos-supported Linux iOS toolchain (install-theos); its
+          # ld64 is far newer than the sbingner clang-10 one, which asserts on
+          # the kernel link (typeLastSection)
+          curl -fL -o /tmp/tc.tar.xz https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-amd64.tar.xz
+          tar -C "$HOME/theos/toolchain" -xJf /tmp/tc.tar.xz
+          # normalize: theos wants $THEOS/toolchain/linux/iphone
+          if [ -d "$HOME/theos/toolchain/iphone" ]; then
+            mkdir -p "$HOME/theos/toolchain/linux" && mv "$HOME/theos/toolchain/iphone" "$HOME/theos/toolchain/linux/"
+          elif [ -d "$HOME/theos/toolchain/iOSToolchain-amd64" ]; then
+            mkdir -p "$HOME/theos/toolchain/linux" && mv "$HOME/theos/toolchain/iOSToolchain-amd64" "$HOME/theos/toolchain/linux/iphone"
           fi
           test -x "$HOME/theos/toolchain/linux/iphone/bin/ld"
           # every shared library the prebuilt cctools needs must resolve; the
