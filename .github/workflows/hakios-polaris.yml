@@ -85,10 +85,14 @@ jobs:
           # toolchain libs live in ../lib (rpath misses some), so put them on
           # LD_LIBRARY_PATH for the check and for the kernel build after it
           echo "LD_LIBRARY_PATH=$HOME/theos/toolchain/linux/iphone/lib" >> "$GITHUB_ENV"
-          for b in "$HOME/theos/toolchain/linux/iphone/bin"/*; do
-            LD_LIBRARY_PATH="$HOME/theos/toolchain/linux/iphone/lib" ldd "$b" 2>/dev/null | \
-              grep -Hn 'not found' && { echo "missing libs for $b"; exit 1; }
-          done; true
+          # the tools the build invokes must actually run (lldb & co are unused)
+          export LD_LIBRARY_PATH="$HOME/theos/toolchain/linux/iphone/lib"
+          for b in clang clang++ ld ld64 cctools-ld64 lipo ar ranlib nm otool dsymutil; do
+            f="$HOME/theos/toolchain/linux/iphone/bin/$b"
+            [ -f "$f" ] || continue
+            ldd "$f" 2>/dev/null | grep 'not found' && { echo "missing libs for $f"; exit 1; }
+          done
+          "$HOME/theos/toolchain/linux/iphone/bin/clang" --version | head -2
           git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks "$HOME/theos/sdks-git"
           git -C "$HOME/theos/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
           ln -sfn ../sdks-git/iPhoneOS16.5.sdk "$HOME/theos/sdks/iPhoneOS16.5.sdk"
