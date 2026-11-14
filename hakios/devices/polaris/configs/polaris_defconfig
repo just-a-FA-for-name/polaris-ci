@@ -6,9 +6,6 @@
 #include open.config
 #include sdm845.config
 CONFIG_DEVICE="polaris"
-# CONFIG_CPUFREQ is not set
-# CONFIG_THERMAL is not set
-# CONFIG_SOCINFO is not set
 # CONFIG_UFS is not set
 # CONFIG_TOUCHSCREEN is not set
 # CONFIG_HAKIOS_GOODIX is not set
@@ -27,11 +24,8 @@ CONFIG_DEVICE="polaris"
 # CONFIG_HAKIOS_SOUND is not set
 # CONFIG_HAKIOS_MIC is not set
 # CONFIG_HAKIOS_BATTERY is not set
-# CONFIG_HAKIOS_CPUFREQ is not set
-# CONFIG_HAKIOS_THERMAL is not set
 # CONFIG_HAKIOS_PMIC is not set
 # CONFIG_HAKIOS_BATTGUARD is not set
-# CONFIG_HAKIOS_SOCINFO is not set
 # CONFIG_HAKIOS_WIFI is not set
 # CONFIG_HAKIOS_WIFILX is not set
 # CONFIG_HAKIOS_WIFI10 is not set
