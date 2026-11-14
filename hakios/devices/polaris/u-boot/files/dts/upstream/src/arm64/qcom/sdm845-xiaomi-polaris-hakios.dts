@@ -43,6 +43,7 @@
 		/* ABL leaves a live 1080x2160 a8r8g8b8 panel at 0x9d400000 */
 		framebuffer: framebuffer@9d400000 {
 			compatible = "simple-framebuffer";
+			reg = <0x0 0x9d400000 0x0 0x02400000>;
 			memory-region = <&cont_splash_mem>;
 			format = "a8r8g8b8";
 			stride = <(1080 * 4)>;
