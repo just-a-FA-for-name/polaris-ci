@@ -39,8 +39,8 @@ jobs:
           # the sbingner cctools prebuilts (ld64, clang's libLLVM) link noble-era
           # libtinfo.so.5 (versioned symbols) and libxml2.so.2, dropped by newer
           # releases: take them from noble, where they still exist as compat libs
-          echo "deb http://archive.ubuntu.com/ubuntu noble main universe" | \
-            sudo tee /etc/apt/sources.list.d/noble-compat.list
+          echo "deb http://archive.ubuntu.com/ubuntu jammy main universe" | \
+            sudo tee /etc/apt/sources.list.d/jammy-compat.list
           sudo apt-get update
           apt-cache policy libtinfo5 libxml2 | grep -A2 '^\S'
           sudo apt-get install -y --no-install-recommends libtinfo5 libxml2
