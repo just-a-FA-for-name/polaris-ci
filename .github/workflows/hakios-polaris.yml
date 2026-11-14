@@ -58,7 +58,7 @@ jobs:
           set -e
           cd "$K"
           uefi/u-boot/apply.sh polaris
-          git -C u-boot apply --whitespace=fix devices/polaris/u-boot/patches/sdm845-carveout.patch
+          git -C u-boot apply --whitespace=fix "$K/devices/polaris/u-boot/patches/sdm845-carveout.patch"
           uefi/u-boot/build.sh polaris
           test -s u-boot/build-polaris/u-boot.bin
 
