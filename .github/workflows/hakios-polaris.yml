@@ -36,6 +36,9 @@ jobs:
             autoconf automake curl xz-utils lzma lz4 zstd git cpio unzip p7zip-full \
             gcc-aarch64-linux-gnu device-tree-compiler swig python3-dev \
             libgnutls28-dev uuid-dev libssl-dev bc libncurses-dev ca-certificates
+          # the sbingner cctools ld64 wants ncurses5's libtinfo; Ubuntu 24.04 ships 6
+          sudo apt-get install -y --no-install-recommends libtinfo5 || \
+            sudo ln -sf libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
 
       - name: Kernel tree + polaris device layer
         run: |
