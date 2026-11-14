@@ -1,0 +1,24 @@
+soc_ipa_base=0x1e40000
+soc_gsi_base=0x1e04000
+soc_aoss=0xc300000
+soc_rsc=0x179e0000
+soc_apps_smmu=0x15000000
+soc_smem=0x86000000
+soc_imem=0x14600000
+soc_ipa_stream=0x720
+soc_ipa_stream_uc=0x722
+soc_pas_ipa=0xf
+soc_ipa_fw=ipa_fws
+
+# ---- polaris 补充，2026-11-14，来源见 ../00-对照清单.md ----
+# SDM845 家族固定值（drivers/power/hakios.cpufreq.c:357 与 fajita/soc.args 注释一致），
+# 本机 DTB 没有名为 cmd_db 的 reserved-memory 节点，故由工具报 missing。
+soc_cmd_db=0x85fe0000
+# 以下 4 项本机节点命名与参考机 redwood 不同，工具未能自动读出；均为**候选值，上机前必须复核**：
+#   soc_ipcc        本机 DTB 中 qcom,ipcc 出现 0 次，845 无此块，保持缺省。
+#   soc_mpss_mem    本机 modem 保留区 0x8e400000 + 0x7800000（wifi-port/README.md 实测）-> 候选 0x8e400000
+#   soc_pas_mpss    本机 /soc/qcom,mss@4080000，compatible qcom,pil-q6v55-mss，MBA 在 mba_region@0x96500000；
+#                   需按本机节点取 pas-id，勿套 donor 的 PAS 流程。
+#   modem_ipa_fw_at 本机 inventory 无 ipa_gsi 节点名，需查等价保留区，勿套 donor 0x8dc00000。
+# 本机 WLAN 0x18800000 / IOMMU SID 0x40（donor 0x640）、SMEM SMP2P 435/428 bit14/12、
+# 电源 ldoa5/ldoa7/ldoa17/ldoa25（donor ldoa1/ldoa7/ldoc2/ldoc11）均见 wifi-port/README.md。

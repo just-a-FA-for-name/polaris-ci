@@ -1,0 +1,66 @@
+# Reference only (not a defconfig member): the previous AI's staged "everything
+# at once" polaris.config. Kept so the driver bring-up order in
+# docs/porting/index.md step 3 can enable pieces selectively.
+# Verified state: `check` passed; never compiled, never booted.
+
+# HakiOS fragment: the Xiaomi Mi MIX 2S (polaris / SDM845), 2026-11-14.
+CONFIG_DEVICE="polaris"
+CONFIG_FIRMWARE="device"
+
+CONFIG_HAKIOS_A630=y
+CONFIG_HAKIOS_GPUSERVICE=y
+CONFIG_GPU=y
+CONFIG_CA_VBL=y
+
+CONFIG_HAKIOS_WIFI10=y
+CONFIG_HAKIOS_WIFILX=y
+CONFIG_WIFI=y
+CONFIG_WIFI_STATION=1
+CONFIG_WIFI_BA=1
+CONFIG_WIFI_WIDE=1
+
+CONFIG_HAKIOS_MPSS845=y
+CONFIG_HAKIOS_QMI=y
+CONFIG_HAKIOS_CELL=y
+# CONFIG_MODEM_STEP is not set
+# CONFIG_MODEM_KEEP is not set
+# CONFIG_IPA8 is not set
+
+CONFIG_HAKIOS_UFS=y
+CONFIG_HAKIOS_BATTERY=y
+CONFIG_HAKIOS_FG8998=y
+CONFIG_HAKIOS_BUTTONS=y
+CONFIG_BUTTONS=1
+CONFIG_CPUFREQ_GOV=1
+
+# CONFIG_HAKIOS_SOUND is not set
+# CONFIG_HAKIOS_MIC is not set
+# CONFIG_HAKIOS_ADSP is not set
+# CONFIG_HAKIOS_ADSP845 is not set
+# CONFIG_HAKIOS_SPEAKER is not set
+# CONFIG_HAKIOS_BT is not set
+# CONFIG_HAKIOS_BT3990 is not set
+# CONFIG_HAKIOS_HIDRESOURCE is not set
+# CONFIG_HAKIOS_CAMERA is not set
+# CONFIG_HAKIOS_TORCH is not set
+# CONFIG_HAKIOS_TORCH8998 is not set
+# CONFIG_HAKIOS_HAPTIC is not set
+# CONFIG_HAKIOS_HAPTIC8998 is not set
+# CONFIG_HAKIOS_PMIC is not set
+# CONFIG_HAKIOS_BATTGUARD is not set
+# CONFIG_HAKIOS_MODEM is not set
+# CONFIG_HAKIOS_WIFI is not set
+# CONFIG_HAKIOS_ADRENO is not set
+# CONFIG_HAKIOS_GOODIX is not set
+# CONFIG_HAKIOS_DSIBL is not set
+# CONFIG_HAKIOS_RMI4 is not set
+
+# CONFIG_ADSP is not set
+# CONFIG_SOUND is not set
+# CONFIG_MIC is not set
+# CONFIG_TOUCHSCREEN is not set
+# CONFIG_MODEM is not set
+# CONFIG_MODEM_AGAIN is not set
+# CONFIG_HAPTIC is not set
+# CONFIG_TORCH is not set
+# CONFIG_BT is not set

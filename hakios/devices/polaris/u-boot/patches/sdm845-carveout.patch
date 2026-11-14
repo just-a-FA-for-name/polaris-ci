@@ -1,0 +1,21 @@
+--- a/arch/arm/mach-snapdragon/board.c
++++ b/arch/arm/mach-snapdragon/board.c
+@@ -752,5 +752,20 @@
+ 		carve_out_reserved_memory();
+ 		debug("carveout time: %lums\n", get_timer(carveout_start));
+ 	}
++
++	/*
++	 * HakiOS (Xiaomi Mi MIX 2S / polaris): the SDM845 regions of the camera, the modem, its MBA, the
++	 * Wi-Fi and the DSPs (0x8bf00000..0x98000000: camera, adsp, wlan_msa, mpss, venus, cdsp, mba,
++	 * slpi, spss; all no-map in the phone's own tree and unused by U-Boot and the loader) mapped as
++	 * FAULT, so that no speculative access of the core the loader keeps while XNU runs reaches memory
++	 * the hypervisor has handed to the modem: an XPU violation, and the phone in CrashDump.
++	 */
++	if (fdt_node_check_compatible(gd->fdt_blob, 0, "qcom,sdm845") == 0) {
++		mmu_change_region_attr(0x8bf00000, 0x0c100000, PTE_TYPE_FAULT);
++		/* the modem's header while the MBA checks it (hakios-mdata@a0000000, no-map in the tree) */
++		mmu_change_region_attr(0xa0000000, 0x00200000, PTE_TYPE_FAULT);
++	}
+ 	dcache_enable();
+ }

@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Xiaomi Mi MIX 2S (polaris) for the HakiOS U-Boot: the upstream board plus the
+ * region the HakiOS loader and payload are staged in.
+ */
+
+#include "sdm845-xiaomi-polaris.dts"
+
+/ {
+	reserved-memory {
+		/*
+		 * 0xf0000000..0xf4000000 is plain RAM on this phone (rmtfs starts at
+		 * 0xf6301000). No "no-map": the hakios command writes here, the rest
+		 * of U-Boot must stay out of it.
+		 */
+		hakios_payload_mem: hakios-payload@f0000000 {
+			reg = <0x0 0xf0000000 0x0 0x4000000>;
+		};
+
+		/*
+		 * The modem's header (modem.mdt) while its MBA checks it (XNU's drivers/modem/hakios.mpss845.c),
+		 * as Linux's mdata_mem (sdm845.dtsi: 16K allocated in 0xa0000000..0xc0000000, no-map): plain RAM,
+		 * not one of the subsystems' regions, which the modem may not read. 2M, so that U-Boot's
+		 * carve-out (board.c) maps it FAULT as a whole block.
+		 */
+		hakios_mdata_mem: hakios-mdata@a0000000 {
+			reg = <0x0 0xa0000000 0x0 0x200000>;
+			no-map;
+		};
+
+		/* the panel's framebuffer, as ABL left it */
+		cont_splash_mem: splash@9d400000 {
+			reg = <0x0 0x9d400000 0x0 0x02400000>;
+			no-map;
+		};
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* ABL leaves a live 1080x2160 a8r8g8b8 panel at 0x9d400000 */
+		framebuffer: framebuffer@9d400000 {
+			compatible = "simple-framebuffer";
+			memory-region = <&cont_splash_mem>;
+			format = "a8r8g8b8";
+			stride = <(1080 * 4)>;
+			width = <1080>;
+			height = <2160>;
+		};
+	};
+};

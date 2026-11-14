@@ -1,0 +1,109 @@
+# Build the upstream HakiOS port for the Xiaomi Mi MIX 2S (polaris): U-Boot,
+# the XNU kernel and the loader, packed into a RAM-only `fastboot boot` image.
+#
+# This repository carries only the device layer (hakios/devices/polaris, the
+# sdm845 SoC layer in hakios/socs/sdm845). Everything else comes from upstream
+# at build time:
+#   - kernel tree:  github.com/kiwiiiii-eth/hakios-xnu-kernel @ fajita-v0.1-beta
+#   - U-Boot setup: github.com/oosexgang/hakios-uefi @ mac (uefi/ in the tree)
+#
+# The image is for `fastboot boot` only. Nothing is flashed.
+
+name: hakios-polaris
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'hakios/**'
+      - '.github/workflows/hakios-polaris.yml'
+
+env:
+  DEVICE: polaris
+  K: ${{ github.workspace }}/kernel-tree
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang lld flex bison m4 perl python3 python3-setuptools \
+            autoconf automake curl xz-utils lzma lz4 zstd git cpio unzip p7zip-full \
+            gcc-aarch64-linux-gnu device-tree-compiler swig python3-dev \
+            libgnutls28-dev uuid-dev libssl-dev bc libncurses-dev ca-certificates
+
+      - name: Kernel tree + polaris device layer
+        run: |
+          set -e
+          curl -fL -o /tmp/k.zip https://codeload.github.com/kiwiiiii-eth/hakios-xnu-kernel/zip/refs/tags/fajita-v0.1-beta
+          unzip -q /tmp/k.zip -d /tmp
+          mv /tmp/hakios-xnu-kernel-fajita-v0.1-beta "$K"
+          # the device layer this repository carries
+          cp -a hakios/devices/polaris "$K/devices/"
+          mkdir -p "$K/socs"
+          cp -a hakios/socs/sdm845 "$K/socs/"
+          # the U-Boot setup (uefi/u-boot/{apply,build}.sh, hakios.patch, files/)
+          git clone -q --depth 1 -b mac https://github.com/oosexgang/hakios-uefi "$K/uefi"
+          cd "$K"
+          python3 tools/hakios-device.py check polaris
+          make polaris_defconfig
+
+      - name: U-Boot for polaris
+        run: |
+          set -e
+          cd "$K"
+          uefi/u-boot/apply.sh polaris
+          git -C u-boot apply --whitespace=fix devices/polaris/u-boot/patches/sdm845-carveout.patch
+          uefi/u-boot/build.sh polaris
+          test -s u-boot/build-polaris/u-boot.bin
+
+      - name: Theos toolchain + iPhoneOS 16.5 SDK
+        run: |
+          set -e
+          git clone -q --depth 1 https://github.com/theos/theos "$HOME/theos"
+          mkdir -p "$HOME/theos/toolchain/linux/iphone" "$HOME/theos/sdks"
+          curl -fL -o /tmp/tc.tar.lzma https://github.com/sbingner/llvm-project/releases/download/v10.0.0-2/linux-ios-arm64e-clang-toolchain.tar.lzma
+          tar -C "$HOME/theos/toolchain/linux/iphone" --lzma -xf /tmp/tc.tar.lzma
+          if [ -d "$HOME/theos/toolchain/linux/iphone/ios-arm64e-clang-toolchain" ]; then
+            cp -a "$HOME/theos/toolchain/linux/iphone/ios-arm64e-clang-toolchain/." "$HOME/theos/toolchain/linux/iphone/"
+          fi
+          test -x "$HOME/theos/toolchain/linux/iphone/bin/ld"
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks "$HOME/theos/sdks-git"
+          git -C "$HOME/theos/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
+          ln -sfn ../sdks-git/iPhoneOS16.5.sdk "$HOME/theos/sdks/iPhoneOS16.5.sdk"
+          test -d "$HOME/theos/sdks/iPhoneOS16.5.sdk/usr/include"
+
+      - name: Kernel
+        run: cd "$K" && make kernel JOBS=$(nproc)
+
+      - name: Loader + RAM-boot image
+        run: |
+          set -e
+          cd "$K"
+          PLACEHOLDER=1 xnuloader/mkidentity.sh
+          xnuloader/build.sh
+          test -s xnuloader/loader.efi
+          mkdir -p build out
+          python3 xnuloader/mkpayload.py -o build/usb-payload.bin loader.efi=xnuloader/loader.efi --usb
+          python3 tools/mkubootimg.py -d polaris -l xnuloader/loader.efi \
+            -p build/usb-payload.bin -o out/hakios-u-boot-polaris.img
+          test -s out/hakios-u-boot-polaris.img
+
+      - name: Hashes
+        run: |
+          cd "$K"
+          sha256sum out/hakios-u-boot-polaris.img hakios-kernel \
+            u-boot/build-polaris/u-boot.bin xnuloader/loader.efi \
+            | tee out/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hakios-polaris
+          path: |
+            kernel-tree/out/
+            kernel-tree/xnu-build.log
