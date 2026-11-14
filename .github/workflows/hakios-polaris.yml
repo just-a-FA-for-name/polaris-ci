@@ -99,6 +99,16 @@ jobs:
             ldd "$f" 2>/dev/null | grep 'not found' && { echo "missing libs for $f"; exit 1; }
           done
           "$HOME/theos/toolchain/linux/iphone/bin/clang" --version | head -2
+          # DSYMUTIL: XNU's dSYM step finds tools through host/bin/xcrun, which
+          # looks only in xnu-deps/host/bin and /usr/bin. The toolchain's own
+          # dsymutil if it has one, else a stub: make only needs the target dir
+          mkdir -p "$K/xnu-deps/host/bin"
+          if [ -x "$HOME/theos/toolchain/linux/iphone/bin/dsymutil" ]; then
+            ln -sf "$HOME/theos/toolchain/linux/iphone/bin/dsymutil" "$K/xnu-deps/host/bin/dsymutil"
+          else
+            printf '#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do [ "$1" = "-o" ] && { out="$2"; shift 2; continue; }; shift; done\n[ -n "$out" ] && mkdir -p "$out"\nexit 0\n' > "$K/xnu-deps/host/bin/dsymutil"
+            chmod +x "$K/xnu-deps/host/bin/dsymutil"
+          fi
           git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks "$HOME/theos/sdks-git"
           git -C "$HOME/theos/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
           ln -sfn ../sdks-git/iPhoneOS16.5.sdk "$HOME/theos/sdks/iPhoneOS16.5.sdk"
