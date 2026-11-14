@@ -1,14 +1,14 @@
 # HakiOS defconfig for the Xiaomi Mi MIX 2S (polaris): the common kernel, no firmware
 # files, and NONE of the phone drivers for the first bare run (docs/PORTING.md:
-# empty run first, drivers one at a time after). The SDM845 platform facts below
-# come from sdm845.config, which is included again once drivers go in.
+# empty run first, drivers one at a time after). sdm845.config also turns on the
+# three SoC drivers; they are switched back off below and come back one at a time.
 #include common_defconfig
 #include open.config
+#include sdm845.config
 CONFIG_DEVICE="polaris"
-CONFIG_SOC="sdm845"
-CONFIG_CPUS=8
-CONFIG_BOOTCPU=7
-CONFIG_GIC_VTIMER=19
+# CONFIG_CPUFREQ is not set
+# CONFIG_THERMAL is not set
+# CONFIG_SOCINFO is not set
 # CONFIG_UFS is not set
 # CONFIG_TOUCHSCREEN is not set
 # CONFIG_HAKIOS_GOODIX is not set
