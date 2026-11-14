@@ -118,10 +118,20 @@ jobs:
         run: cd "$K" && make kernel JOBS=$(nproc)
 
       - name: Loader + RAM-boot image
+        env:
+          LOADER_IM4P_B64: ${{ secrets.LOADER_IM4P_B64 }}
         run: |
           set -e
           cd "$K"
-          PLACEHOLDER=1 xnuloader/mkidentity.sh
+          # real iPhone identity when the device-tree member of the builder's own
+          # IPSW is provided as a secret; the placeholder loader reports
+          # "platform qemu-virt" and the kernel never starts on real hardware
+          if [ -n "$LOADER_IM4P_B64" ]; then
+            echo "$LOADER_IM4P_B64" | base64 -d > /tmp/dt.im4p
+            xnuloader/mkidentity.sh /tmp/dt.im4p
+          else
+            PLACEHOLDER=1 xnuloader/mkidentity.sh
+          fi
           xnuloader/build.sh
           test -s xnuloader/loader.efi
           mkdir -p build out
