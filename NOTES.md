@@ -60,7 +60,18 @@
     watches log "presses of power/volume up/volume down" and "finger N down").
 - NEXT: physical button check on the same payload, then root.apfs+system.apfs
   run with SpringBoard and real touch events (rwtouch exists for scripted taps).
-- Phone: ABL fastboot -> u-boot -> xnuloader alive at last check.
+
+- USERLAND+INPUT RUNNING 2026-11-15 evening:
+  - system.apfs resident (xl ramdisk flow: `fastboot oem ramdisk` then stage
+    userland/system.apfs, ~70 s upload). Payload ramdisk = userland/root.apfs.
+  - Cmdline ~383 chars incl buttons_pon/volup, rmi4_* polaris args, buttons=1
+    rmi4=1, sb_delay=10, epoch=. Both drivers + full Darwin userland coexist:
+    rmi4 step6 watching, buttons watching, launchd -> backboardd -> SpringBoard
+    home screen confirmed on framebuffer (log overlay from -v).
+  - Touch path: S3330 -> rmi4 -> /dev/hakios-touch queue -> libhakios.dylib
+    injected into backboardd (INJECT default) -> IOHID -> SpringBoard.
+  - Physical tap/swipe/button verification pending (user stepped away ~20 min).
+- Phone: mid 10-min userland run at last check; loader stays resident after.
 
 ## CURRENT 2026-11-07 step12 bisect build (supersedes stale sections)
 
