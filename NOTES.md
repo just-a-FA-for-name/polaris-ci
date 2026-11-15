@@ -24,14 +24,32 @@
     volup = PM8998 GPIO6 (0xc500) = buttons_volup=0x0c5, voldown = RESIN_N
     (driver default, no arg). Arbiter regs 0xc440000/0xc40a000/0xe600000 are
     SDM845-common, already hardcoded correctly.
-  - Next: download run 43694595362 artifacts, boot image, stage payload with
-    `buttons=1` first, then `rmi4=1` (+ optional rmi4_steps bisect), verify via
-    oem log + real userland.
+  - Next: buttons test on the run-43698235770 kernel (defconfig fix 21c57cb adds
+    CONFIG_HAKIOS_BUTTONS + CONFIG_TOUCHSCREEN to the defconfig itself — defconfig
+    unsets beat included-fragment =y, which is why 43694595362 had rmi4 but no
+    buttons object), then retest real userland touch.
   - IMPORTANT: kernel in CI = upstream fajita-v0.1-beta zip + device layer +
     xnu/patches/0103. Driver changes must go through new patches in xnu/patches/
     (numbered 0103+) — the older 0088-0102 series belongs to the dipper line and
     is NOT applied by the workflow.
-- Phone was in ABL fastboot at last check.
+
+- RMI4 VERIFIED ON HARDWARE 2026-11-15 (kernel from run 43694595362, hello ramdisk):
+  - All 6 steps pass: VDD via ldoa28 3.008 V; pins GPIO33/34 func2 NORTH, attn
+    GPIO125 EAST, reset GPIO99 NORTH; clocks vote bit 28 + SE6 regs 0x18738;
+    SE at 0xa98000 I2C proto 3 FIFO on 400 kHz; PDT F34/F01/F12; F01 product
+    "S3330" (matches DTB synaptics_dsx); F12 query+control read; step6 watching.
+  - MULTI-TOUCH WORKS: fingers 0-3 down events with in-range coords, attn line
+    toggles on each touch, 13k+ I2C transfers 0 failed.
+  - KEY DEBUG FACT: "stuck after step 2" was never a driver hang — pid 1 exiting
+    panics the kernel ~9 ms after boot, killing the rmi4 thread mid-init. Fix:
+    rebuilt hello.c with hello_wait=N keeps pid1 alive. lld 18 can't -static
+    Mach-O, so hello-wait was produced by patching lld output: strip dyld load
+    commands, LC_MAIN->LC_UNIXTHREAD(pc=TEXT.vmaddr+entryoff), flags=0x1. Binary
+    at kernel-src/.../hello-wait (git-ignored dir, regenerate if lost).
+  - cmdline discipline: loader prefixes ~50 chars (debug/rd/hakios_kver) so the
+    payload cmdline budget is ~550 chars, not 607. Minimal working set ~353.
+  - buttons=1 had no effect yet (driver object absent in 43694595362 build).
+- Phone: ABL fastboot -> u-boot -> xnuloader alive at last check.
 
 ## CURRENT 2026-11-07 step12 bisect build (supersedes stale sections)
 
