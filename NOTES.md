@@ -1,4 +1,4 @@
-﻿## CURRENT 2026-11-15 HakiOS input stage (supersedes the dipper line below)
+## CURRENT 2026-11-15 HakiOS input stage (supersedes the dipper line below)
 
 - The HakiOS upstream line is now the working one: loader + XNU boot from RAM, real
   Darwin userland (system.apfs) with launchd/backboardd/SpringBoard verified on the
@@ -32,6 +32,39 @@
     xnu/patches/0103. Driver changes must go through new patches in xnu/patches/
     (numbered 0103+) — the older 0088-0102 series belongs to the dipper line and
     is NOT applied by the workflow.
+
+
+- SMP + CPUFREQ BREAKTHROUGH 2026-11-15 (payload-only change, same kernel binary
+  from run 43698235770):
+  - ROOT CAUSE OF "UNUSABLE LAG": the cmdline never had cpufreq=1. All cores ran
+    at the boot loader's table row: OSM group 1 (big) was at row 0 = lowest freq.
+    With cpufreq=1 the driver sets every domain's top row: group0 (3 little
+    cores) -> 1766 MHz, group1 (4 big cores) -> 2649 MHz (turbo row 2803 unused).
+    Software rendering at 2160p on ~300 MHz A75s is what made it "5 s a tap".
+  - SMP VERIFIED: cpus=8 works, no panic; big.LITTLE detected right
+    ("cpu 4/5/6 slower core, scheduler uses after cpu 3/2/1"). Banner "7 cpu" --
+    phys ids seen: cpu0=0x700, then 0x400/0x500/0x600 big, 0x100/0x200/0x300
+    little; one phys id (0x000?) not brought up. bootcpu=7 still required.
+  - -v REMOVED for userland runs: verbose console drawing to the framebuffer is
+    what painted log flood over SpringBoard and looked like "花屏"/freeze.
+    Panic screens are also drawn over old content -> earlier "花屏" reports were
+    panic-screen text residue, not display corruption. Loader stays controllable.
+  - With cpus=8 + cpufreq=1 + rmi4=1 + buttons=1 + no -v: SpringBoard took the
+    screen ~45 s, wallpaper renders normally, Settings app opened and scrolled,
+    touch + all three buttons deliver events end-to-end.
+  - Known remaining perf items (still software rendering, "no GPU draws" per
+    inject log): rmi4/buttons watch loops use delay_for_interval (busy-wait) --
+    fine for short init delays, but the 10/16 ms poll intervals should become a
+    blocking sleep (precedent: lck_mtx_sleep_deadline in drivers/wifi/hakios.lx.c
+    lx_os_sleep) or a thread_call. Adreno 630 (hakios.a630.c, fw-gpu/) is the
+    real fix for UI speed.
+  - Working cmdline (462->~500 chars, under the 607 limit):
+    loader_return_after=600 cpus=8 bootcpu=7 cpufreq=1 gic_vtimer=19 ddr=0
+    fb_hz=60 fb_threads=3 soc_cmd_db=0x85fe0000 soc_rsc=0x179e0000
+    soc_smem=0x86000000 soc_cpufreq=0x17d43000 soc_cpufreq_step=0x2800
+    soc_cpufreq_groups=2 soc_cpufreq_osm=1 buttons_pon=0x008 buttons_volup=0x0c5
+    rmi4_se=0xa98000 rmi4_seidx=6 rmi4_scl=33 rmi4_sda=34 rmi4_func=2 rmi4_vio=0
+    rmi4_y=2160 buttons=1 rmi4=1 sb_delay=10
 
 - RMI4 VERIFIED ON HARDWARE 2026-11-15 (kernel from run 43694595362, hello ramdisk):
   - All 6 steps pass: VDD via ldoa28 3.008 V; pins GPIO33/34 func2 NORTH, attn
