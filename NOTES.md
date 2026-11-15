@@ -1115,3 +1115,18 @@ Run history on CI kernel 43708464378 (contains patch 0104, adreno_ahb boot-arg):
 - adreno_only=10: DONE. GMU held in reset, two DTCM words written+read+restored: "the GMU's memory TAKES WHAT IS WRITTEN: its firmware can be loaded". First writes INTO the GPU block verified.
 - adreno_only=11: DONE. TrustZone SMC channel works; SCM_PAS_IS_SUPPORTED returns 0 for audio/modem/video/GPU - driver says "this question tells nothing here" (inconclusive, not a failure).
 Remaining: 12 (zap signature), 13 (GMU mem alloc), 14 (GMU fw load - needs /fw/a630_gmu.bin from root-fw.apfs), 15 (start GMU), 16 (GMU RPMh+queues), 17 (talk to GMU, 3D core power), 18 (3D mem+sqe microcode), 19 (zap load+auth via TZ), 20 (3D regs+CP), 21 (leave secure mode), 22 (GPU fills a frame). Plan: cold reboot then adreno=22 with root-fw.apfs ramdisk (firmware in /fw/); per-step self-checks bound the risk.
+
+## 2026-11-06 **ADRENO 630 FULLY OPERATIONAL ON POLARIS - all 22 steps, GPU drew on the panel**
+Cold boot + adreno=22 adreno_ahb=0 adreno_return=1, ramdisk=root-fw.apfs (polaris's own firmware in /fw/), CI kernel 43708464378. Entire sequence in ~44 s, clean teardown, back to loader. The ONLY register difference found on this phone is the missing gpu_cc_ahb at 0x1078 (v2 GPUCC).
+Key milestones in the log:
+- step 12: TRUSTZONE ACCEPTS THE ZAP SHADER'S SIGNATURE (polaris-extracted a630_zap.mdt/b02 pass TZ auth - no signing problem)
+- step 13: SMMU context 1 fully programmed for the GMU (stream 5), no faults
+- step 14: a630_gmu.bin 32768 B loaded, "THE GMU'S FIRMWARE IS LOADED"
+- step 15: GMU config + RSCC/PDC programming
+- step 17: GMU fw 0x10070000 answers HFI, core speed 596 MHz granted, "THE 3D CORE HAS POWER AND ANSWERS"
+- step 19: "TRUSTZONE HAS AUTHENTICATED AND STARTED THE ZAP SHADER"
+- step 20: "THE 3D CORE TAKES COMMANDS" (CP ring works)
+- step 21: "THE 3D CORE WRITES OUR MEMORY ON COMMAND" (0x600dc0de)
+- step 22: "A PICTURE DRAWN BY THE GPU IS ON THE PANEL: orange, white, blue from the top"
+- teardown: 3D core halted, GMU acked slumber, zap released, SMMU torn down, CX powered off (cx_gdscr back to 0x222001). So a FULL run does power CX off again - only a mid-sequence run (e.g. adreno=5 with return after step 5) leaves it on.
+Remaining for real acceleration: gpu=1 (GPUSERVICE hands the GPU to WindowServer; upstream WIP on the 6T per source comments). Next: try a userland boot with gpu args + root-fw.apfs and see whether hakios.gpu.c + SpringBoard produce real GPU draws instead of "no GPU draws".
