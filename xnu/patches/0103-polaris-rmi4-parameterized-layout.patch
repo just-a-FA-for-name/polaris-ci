@@ -1,0 +1,1095 @@
+--- a/drivers/input/hakios.rmi4.c
++++ b/drivers/input/hakios.rmi4.c
+@@ -22,6 +22,11 @@
+  * Boot-args: rmi4=1; rmi4_steps=N; rmi4_khz=100|400 (the bus, 400); rmi4_charger=0|1|2 (F01's charger bit: off, on, as USB is (2));
+  * rmi4_x=<max>, rmi4_y=<max> (the controller's
+  * coordinate range: 1080 x 2340, the panel's own pixels on this phone); soc_rsc=, soc_cmd_db= (RPMh, the SDM845's by default).
++ *
++ * Another SDM845 phone's layout goes in boot-args too, this phone's the defaults: rmi4_se=, rmi4_seidx= (the serial
++ * engine's address and its number within QUP wrapper 1: engine 4 here), rmi4_addr= (0x20), rmi4_scl=, rmi4_sda=,
++ * rmi4_func= (the pins' TLMM numbers and their alt function: GPIO49/50, function 1 = qup12), rmi4_reset= (99),
++ * rmi4_attn= (125), rmi4_vio= (88; 0: the IO rail has no switch of ours to drive, e.g. a fixed regulator).
+  */
+ #include <kern/clock.h>
+ #include <kern/locks.h>
+@@ -229,13 +234,14 @@
+ 
+ #define TLMM_NORTH_PHYS         0x03900000UL    /* pinctrl-sdm845.c: tile + 0x1000 * pin */
+ #define TLMM_EAST_PHYS          0x03500000UL
+-#define GPIO_I2C_SCL            49              /* NORTH */
+-#define GPIO_I2C_SDA            50              /* NORTH */
+-#define GPIO_RESET              99              /* NORTH */
+-#define GPIO_VIO                88              /* EAST */
+-#define GPIO_ATTN               125             /* EAST */
++static uint32_t gpio_scl = 49, gpio_sda = 50;   /* NORTH (boot-args rmi4_scl=/rmi4_sda=) */
++static uint32_t i2c_func = 1;                   /* the pins' alt function (rmi4_func=; 1 = qup12 here, 2 = qup14 on the MIX 2S) */
++static uint32_t gpio_reset = 99;                /* NORTH (rmi4_reset=) */
++static uint32_t gpio_vio = 88;                  /* EAST (rmi4_vio=; 0: no switch for the IO rail) */
++static uint32_t gpio_attn = 125;                /* EAST (rmi4_attn=) */
+ #define PULL_NONE               0
+ #define PULL_UP                 3
++static uint32_t se_index = 4;                   /* the engine within QUP wrapper 1 (rmi4_seidx=): the clocks below */
+ static vm_offset_t tlmm_north, tlmm_east;
+ 
+ /* ctl: [1:0] pull, [5:2] function, [8:6] drive ((mA / 2) - 1), [9] output enable; io: [0] in, [1] out */
+@@ -266,36 +272,37 @@
+ #define VOTE_QUP1_CORE          (1u << 19)
+ #define VOTE_QUP1_M_AHB         (1u << 20)
+ #define VOTE_QUP1_S_AHB         (1u << 21)
+-#define VOTE_QUP1_S4            (1u << 26)
+-#define GCC_QUP1_S4_CBCR        (gcc + 0x184d4)         /* bit 31: the clock is off */
+-#define GCC_QUP1_S4_CMD         (gcc + 0x184d8)         /* [0] update, [1] root enable */
+-#define GCC_QUP1_S4_CFG         (gcc + 0x184dc)         /* [4:0] divider, [10:8] source (0 = XO), [13:12] mode */
++#define VOTE_QUP1_SE            (1u << (22 + se_index)) /* an engine's: S0 is bit 22 (S4 = 26 here, S6 = 28 on the MIX 2S) */
++#define GCC_QUP1_SE_HALT        (gcc + 0x18014 + 0x130 * se_index)  /* the engine's CBCR: bit 31, the clock is off */
++#define GCC_QUP1_SE_CMD         (GCC_QUP1_SE_HALT + 4)  /* [0] update, [1] root enable */
++#define GCC_QUP1_SE_CFG         (GCC_QUP1_SE_HALT + 8)  /* [4:0] divider, [10:8] source (0 = XO), [13:12] mode */
+ 
+ static bool
+ clocks_on(void)
+ {
+ 	uint32_t cfg;
+ 
+-	wr(GCC_VOTE, rd(GCC_VOTE) | VOTE_QUP1_CORE_2X | VOTE_QUP1_CORE | VOTE_QUP1_M_AHB | VOTE_QUP1_S_AHB | VOTE_QUP1_S4);
++	wr(GCC_VOTE, rd(GCC_VOTE) | VOTE_QUP1_CORE_2X | VOTE_QUP1_CORE | VOTE_QUP1_M_AHB | VOTE_QUP1_S_AHB | VOTE_QUP1_SE);
+ 	sleep_us(50);
+-	cfg = rd(GCC_QUP1_S4_CFG);
+-	wr(GCC_QUP1_S4_CFG, (cfg & ~(0x371fu | (1u << 20))) | 1);      /* XO, divided by 1, no M/N */
+-	wr(GCC_QUP1_S4_CMD, rd(GCC_QUP1_S4_CMD) | 3);
+-	for (int i = 0; i < 1000 && (rd(GCC_QUP1_S4_CMD) & 1); i++) {
++	cfg = rd(GCC_QUP1_SE_CFG);
++	wr(GCC_QUP1_SE_CFG, (cfg & ~(0x371fu | (1u << 20))) | 1);      /* XO, divided by 1, no M/N */
++	wr(GCC_QUP1_SE_CMD, rd(GCC_QUP1_SE_CMD) | 3);
++	for (int i = 0; i < 1000 && (rd(GCC_QUP1_SE_CMD) & 1); i++) {
+ 		sleep_us(10);
+ 	}
+-	for (int i = 0; i < 1000 && (rd(GCC_QUP1_S4_CBCR) >> 31); i++) {
++	for (int i = 0; i < 1000 && (rd(GCC_QUP1_SE_HALT) >> 31); i++) {
+ 		sleep_us(10);
+ 	}
+-	say("rmi4: clocks: votes %#x, engine 4 CFG %#x -> %#x, CMD %#x, CBCR %#x (%s)\n", rd(GCC_VOTE), cfg,
+-	    rd(GCC_QUP1_S4_CFG), rd(GCC_QUP1_S4_CMD), rd(GCC_QUP1_S4_CBCR), (rd(GCC_QUP1_S4_CBCR) >> 31) ? "OFF" : "running");
+-	return !(rd(GCC_QUP1_S4_CBCR) >> 31);
++	say("rmi4: clocks: votes %#x, engine %u CFG %#x -> %#x, CMD %#x, CBCR %#x (%s)\n", rd(GCC_VOTE), se_index, cfg,
++	    rd(GCC_QUP1_SE_CFG), rd(GCC_QUP1_SE_CMD), rd(GCC_QUP1_SE_HALT), (rd(GCC_QUP1_SE_HALT) >> 31) ? "OFF" : "running");
++	return !(rd(GCC_QUP1_SE_HALT) >> 31);
+ }
+ 
+ /* ---- I2C: the GENI serial engine ------------------------------------------------------------------- */
+ 
+-#define SE_PHYS                 0x00a90000UL
++#define SE_PHYS_DEFAULT         0x00a90000UL    /* this phone's i2c12; boot-arg rmi4_se= for another's */
+ #define SE_SIZE                 0x4000UL
++static uint64_t se_phys = SE_PHYS_DEFAULT;
+ static vm_offset_t se;
+ #define GENI_FORCE_DEFAULT      0x020
+ #define GENI_OUTPUT_CTRL        0x024
+@@ -343,8 +350,8 @@
+ #define M_ERRORS                (M_CMD_OVERRUN | M_ILLEGAL_CMD | M_CMD_FAILURE | M_CMD_ABORT | M_GP_IRQ_NACK | M_GP_IRQ_BUS_ERROR)
+ #define I2C_WRITE               1u
+ #define I2C_READ                2u
+-#define TS_ADDRESS              0x20
+ #define XFER_TIMEOUT_US         20000
++static uint32_t ts_address = 0x20;              /* the controller's address (rmi4_addr=) */
+ 
+ static struct {
+ 	uint64_t transfers, failed, nacks;
+@@ -427,7 +434,7 @@
+ 	wr(se + SE_GENI_M_IRQ_CLEAR, 0xffffffff);
+ 	wr(se + SE_I2C_TX_TRANS_LEN, read ? 0 : len);   /* both lengths for every command */
+ 	wr(se + SE_I2C_RX_TRANS_LEN, read ? len : 0);
+-	wr(se + SE_GENI_M_CMD0, (read ? I2C_READ : I2C_WRITE) << 27 | TS_ADDRESS << 9);
++	wr(se + SE_GENI_M_CMD0, (read ? I2C_READ : I2C_WRITE) << 27 | ts_address << 9);
+ 	if (!read) {
+ 		for (unsigned i = 0; i < len; i += 4) {
+ 			uint32_t word = 0;
+@@ -529,7 +536,7 @@
+ 	unsigned irq_bit = 0;
+ 
+ 	if (rmi_write(RMI_PAGE_SELECT, 0) != 0) {
+-		say("rmi4: nobody answers at address %#x (the page select write: status %#x)\n", TS_ADDRESS, bus.last_status);
++		say("rmi4: nobody answers at address %#x (the page select write: status %#x)\n", ts_address, bus.last_status);
+ 		return false;
+ 	}
+ 	/* entries from 0xe9 down, six bytes each, every one read upwards from its address (Linux's rmi_read_pdt_entry) */
+@@ -671,18 +678,27 @@
+ 	PE_parse_boot_argn("rmi4_y", &span_y, sizeof(span_y));
+ 	(void)PE_parse_boot_argn("soc_rsc", &rsc_phys, sizeof(rsc_phys));
+ 	(void)PE_parse_boot_argn("soc_cmd_db", &cmd_db_phys, sizeof(cmd_db_phys));
++	(void)PE_parse_boot_argn("rmi4_se", &se_phys, sizeof(se_phys));
++	(void)PE_parse_boot_argn("rmi4_seidx", &se_index, sizeof(se_index));
++	(void)PE_parse_boot_argn("rmi4_addr", &ts_address, sizeof(ts_address));
++	(void)PE_parse_boot_argn("rmi4_scl", &gpio_scl, sizeof(gpio_scl));
++	(void)PE_parse_boot_argn("rmi4_sda", &gpio_sda, sizeof(gpio_sda));
++	(void)PE_parse_boot_argn("rmi4_func", &i2c_func, sizeof(i2c_func));
++	(void)PE_parse_boot_argn("rmi4_reset", &gpio_reset, sizeof(gpio_reset));
++	(void)PE_parse_boot_argn("rmi4_attn", &gpio_attn, sizeof(gpio_attn));
++	(void)PE_parse_boot_argn("rmi4_vio", &gpio_vio, sizeof(gpio_vio));
+ 	if (span_x == 0 || span_y == 0) {
+ 		span_x = 1080;
+ 		span_y = 2340;
+ 	}
+ 
+-	say("rmi4: step 1: power (RPMh at %#llx, cmd-db at %#llx; GPIO%u)\n", rsc_phys, cmd_db_phys, GPIO_VIO);
++	say("rmi4: step 1: power (RPMh at %#llx, cmd-db at %#llx; GPIO%u)\n", rsc_phys, cmd_db_phys, gpio_vio);
+ 	rsc = ml_io_map(rsc_phys, RSC_SIZE);
+ 	cmd_db = ml_io_map_wcomb(cmd_db_phys, CMD_DB_SIZE);
+ 	tlmm_north = ml_io_map(TLMM_NORTH_PHYS, 0x64000);
+ 	tlmm_east = ml_io_map(TLMM_EAST_PHYS, 0x7e000);
+ 	gcc = ml_io_map(GCC_PHYS, GCC_SIZE);
+-	se = ml_io_map(SE_PHYS, SE_SIZE);
++	se = ml_io_map(se_phys, SE_SIZE);
+ 	if (!rsc || !cmd_db || !tlmm_north || !tlmm_east || !gcc || !se) {
+ 		say("rmi4: a mapping failed\n");
+ 		goto out;
+@@ -690,26 +706,30 @@
+ 	if (!vdd_on()) {
+ 		say("rmi4: VDD not voted: going on all the same (the boot loader may have left it on)\n");
+ 	}
+-	sleep_ms(10);
+-	pin(tlmm_east, GPIO_VIO, 0, PULL_NONE, 3, true, true);
+-	sleep_ms(10);
+-	say("rmi4: VIO on (GPIO%u high)\n", GPIO_VIO);
++	if (gpio_vio) {
++		sleep_ms(10);
++		pin(tlmm_east, gpio_vio, 0, PULL_NONE, 3, true, true);
++		sleep_ms(10);
++		say("rmi4: VIO on (GPIO%u high)\n", gpio_vio);
++	} else {
++		say("rmi4: no VIO switch of ours (rmi4_vio=0): the rail is left as the loader found it\n");
++	}
+ 	if (steps < 2) {
+ 		goto out;
+ 	}
+ 
+-	say("rmi4: step 2: pins: I2C on GPIO%u/%u, attention GPIO%u, reset GPIO%u\n", GPIO_I2C_SCL, GPIO_I2C_SDA, GPIO_ATTN,
+-	    GPIO_RESET);
+-	pin(tlmm_north, GPIO_I2C_SCL, 1, PULL_NONE, 0, false, false);
+-	pin(tlmm_north, GPIO_I2C_SDA, 1, PULL_NONE, 0, false, false);
+-	pin(tlmm_east, GPIO_ATTN, 0, PULL_UP, 3, false, false);
+-	pin(tlmm_north, GPIO_RESET, 0, PULL_UP, 2, true, true);
++	say("rmi4: step 2: pins: I2C on GPIO%u/%u (function %u), attention GPIO%u, reset GPIO%u\n", gpio_scl, gpio_sda,
++	    i2c_func, gpio_attn, gpio_reset);
++	pin(tlmm_north, gpio_scl, i2c_func, PULL_NONE, 0, false, false);
++	pin(tlmm_north, gpio_sda, i2c_func, PULL_NONE, 0, false, false);
++	pin(tlmm_east, gpio_attn, 0, PULL_UP, 3, false, false);
++	pin(tlmm_north, gpio_reset, 0, PULL_UP, 2, true, true);
+ 	sleep_ms(10);
+-	pin(tlmm_north, GPIO_RESET, 0, PULL_UP, 2, true, false);
++	pin(tlmm_north, gpio_reset, 0, PULL_UP, 2, true, false);
+ 	sleep_ms(10);
+-	pin(tlmm_north, GPIO_RESET, 0, PULL_UP, 2, true, true);
++	pin(tlmm_north, gpio_reset, 0, PULL_UP, 2, true, true);
+ 	sleep_ms(200);
+-	say("rmi4: reset done; attention line %s\n", pin_in(tlmm_east, GPIO_ATTN) ? "high" : "LOW (the controller has news)");
++	say("rmi4: reset done; attention line %s\n", pin_in(tlmm_east, gpio_attn) ? "high" : "LOW (the controller has news)");
+ 	if (steps < 3) {
+ 		goto out;
+ 	}
+@@ -723,7 +743,7 @@
+ 		goto out;
+ 	}
+ 
+-	say("rmi4: step 4: the serial engine at %#lx\n", SE_PHYS);
++	say("rmi4: step 4: the serial engine at %#llx\n", se_phys);
+ 	if (!se_init(khz)) {
+ 		goto out;
+ 	}
+@@ -731,7 +751,7 @@
+ 		goto out;
+ 	}
+ 
+-	say("rmi4: step 5: the controller (address %#x)\n", TS_ADDRESS);
++	say("rmi4: step 5: the controller (address %#x)\n", ts_address);
+ 	if (!rmi_pdt() || !rmi_f01_init()) {
+ 		say("rmi4: %llu transfers, %llu failed (%llu not acknowledged): no touch screen\n", bus.transfers, bus.failed, bus.nacks);
+ 		goto out;
+@@ -778,7 +798,7 @@
+ 			(void)rmi_f01_init();
+ 		}
+ 		{
+-			uint32_t attn = pin_in(tlmm_east, GPIO_ATTN);
++			uint32_t attn = pin_in(tlmm_east, gpio_attn);
+ 
+ 			if (attn != last_attn) {
+ 				attn_changes++;
+@@ -805,7 +825,7 @@
+ 		if (status[1] != 0 && said_status < 30) {
+ 			said_status++;
+ 			say("rmi4: interrupt status %#x (device status %#x), attention line %s\n", status[1], status[0],
+-			    pin_in(tlmm_east, GPIO_ATTN) ? "high" : "low");
++			    pin_in(tlmm_east, gpio_attn) ? "high" : "low");
+ 		}
+ 		/*
+ 		 * F12's objects when its interrupt bit says so -- and, to find out what this controller does, twice a second
+@@ -817,7 +837,7 @@
+ 		 * read only on the bit, a whole session saw no touch; with a look twice a second, touches came through), so a
+ 		 * report that is never read stops the reports for good.
+ 		 */
+-		if ((status[1] & f12_irq_mask) || !pin_in(tlmm_east, GPIO_ATTN) || ticks % 10 == 0 || (peek && ticks % 50 == 0)) {
++		if ((status[1] & f12_irq_mask) || !pin_in(tlmm_east, gpio_attn) || ticks % 10 == 0 || (peek && ticks % 50 == 0)) {
+ 			if (rmi_read(f12_data, d, sizeof(d)) == 0) {
+ 				if (!(status[1] & f12_irq_mask) && said_peek < 10) {
+ 					for (unsigned id = 0; id < F12_OBJECTS; id++) {
+--- a/configs/boot-args.lst
++++ b/configs/boot-args.lst
+@@ -1,425 +1,434 @@
+-adreno	k
+-adreno_blind	k
+-adreno_dirty	k
+-adreno_fine	k
+-adreno_keep	k
+-adreno_keep_watch	k
+-adreno_only	k
+-adreno_pause	k
+-adreno_return	k
+-adreno_skip	k
+-adreno_speed	k
+-adreno_stream1	k
+-adreno_watch	k
+-adsp	k
+-adsp8	k
+-adsp8_again	k
+-adsp8_apr	k
+-adsp8_bb	k
+-adsp8_cx	k
+-adsp8_keep	k
+-adsp8_listen	k
+-adsp8_pause	k
+-adsp8_se4	k
+-adsp8_wait	k
+-adsp_again	k
+-adsp_apr_wait	k
+-adsp_keep	k
+-adsp_listen	k
+-adsp_new	k
+-adsp_pause	k
+-adsp_return	k
+-adsp_step	k
+-adsp_wait	k
+-aks_flags	k
+-aks_keys	k
+-aks_lockstate	k
+-aks_log	k
+-aks_probe	k
+-aks_verbose	k
+-apfs_cheap	k
+-apfs_check	k
+-apfs_chunk	k
+-apfs_contents	k
+-apfs_depth	k
+-apfs_dev	k
+-apfs_hash	k
+-apfs_max	k
+-apfs_meta_cluster	k
+-apfs_mnt	k
+-apfs_par	k
+-apfs_root_c	k
+-apfs_root_v	k
+-apfs_round	k
+-apfs_skip	k
+-apfs_sparse	k
+-apfs_store_len	k
+-apfs_store_note	k
+-apfs_store_seed	k
+-apfs_subtree	k
+-apfs_threads	k
+-apfs_ubc_read	k
+-apfs_volume	k
+-apfs_volume_at	k
+-apfs_walkers	k
+-apfs_write_at	k
+-apfs_write_byte	k
+-apfs_write_len	k
+-apfs_write_path	k
+-applog	k
+-applog_name	k
+-autounlock	u
+-battery	kl
+-battery_shared_pa	k
+-battery_stop	k
+-battery_stop_poll	k
+-battmgr	k
+-bootcpu	kl
+-bt	k
+-bt_after	k
+-bt_again	k
+-bt_allcmds	k
+-bt_extadv	k
+-bt_lines	u
+-bt_mac	k
+-bt_said	k
+-buttons	k
+-buttons_pon	k
+-buttons_steps	k
+-buttons_voldown	k
+-buttons_volup	k
+-ca_metallib	u
+-ca_prof	u
+-ca_vbl	u
+-caenv	u
+-cam	kl
+-cam_after	k
+-cam_fake	k
+-cam_fake_fps	k
+-cam_frames	k
+-cam_gain	k
+-cam_keep_mb	k
+-cam_mode	k
+-cam_pattern	k
+-cam_sensor	k
+-cam_settle	k
+-cam_shutter	k
+-cam_vblank	k
+-cc_fade	u
+-cpufreq	k
+-cpufreq_gov	k
+-cpuload	k
+-cpumask	l
+-cpus	l
+-ddr	k
+-ddr_rest	k
+-ddr_vote	k
+-display_probe	k
+-dsibl	k
+-dsibl_test	k
+-epoch	k
+-fb_beam	k
+-fb_beat	k
+-fb_ca_hz	k
+-fb_diff	k
+-fb_filter	k
+-fb_hz	k
+-fb_intf	k
+-fb_measure	k
+-fb_pri	k
+-fb_queue	k
+-fb_threads	k
+-fbheight	k
+-fbscale	k
+-fbsubtype	k
+-fbtrace	k
+-fbwidth	ku
+-fg8998	k
+-fg_charge	k
+-fg_charge_ma	k
+-fg_charger_look	k
+-fg_input_ma	k
+-gamut	l
+-gic_vtimer	k
+-gl	u
+-glblit	u
+-glcensus	u
+-glcompile	u
+-glcopy	u
+-glenv	u
+-glfetch	u
+-glframes	u
+-glgroup	u
+-glno	u
+-glnumbers	u
+-glplain	u
+-glprecision	u
+-glprof	u
+-glsb3	u
+-glshaders	u
+-glshow	u
+-glshow_part	u
+-glshow_zoom	u
+-glskip	u
+-glslow	u
+-glstill	u
+-glsync	u
+-gltrace	u
+-gltrace_at	u
+-gltrace_corners	u
+-gltrace_draws	u
+-gltrace_frames	u
+-gltrace_function	u
+-gltrace_lit	u
+-gltrace_look	u
+-gltrace_place	u
+-gltrace_shaders	u
+-gltrace_uniforms	u
+-glwait	u
+-glyes	u
+-gpu	k
+-gpu_cached	k
+-gpu_dvfs	k
+-gpu_exact	k
+-gpu_keep	k
+-gpu_log	k
+-hakios_kver	k
+-haptic	k
+-haptic_effect	k
+-haptic_ms	k
+-haptic_strength	k
+-hid_resource	k
+-hv_wdt_pet	k
+-ipa8	k
+-ipa_gsi_look	k
+-ipa_iram_look	k
+-loader_return_after	kl
+-m2v_utrace	u
+-machine_name	k
+-membench	k
+-metal	ku
+-metal_all	u
+-metal_defer	u
+-metal_dump	u
+-metal_fps	u
+-metal_gmem	u
+-metal_gmem_draws	u
+-metal_gmem_off	u
+-metal_luma_boost	u
+-metal_m2v	u
+-metal_skip	u
+-metal_trace	u
+-metal_watch	u
+-mic	k
+-mic_adc	k
+-mic_input	k
+-mic_main	k
+-mic_secs	k
+-mic_tap	k
+-mic_test	k
+-modem	k
+-modem_again	k
+-modem_apn	k
+-modem_buffer	k
+-modem_cell_probe	k
+-modem_data	k
+-modem_data_nobind	k
+-modem_data_off	k
+-modem_data_wait	k
+-modem_dpm_off	k
+-modem_ipa	k
+-modem_ipa_bus	k
+-modem_ipa_bus_off	k
+-modem_ipa_data_off	k
+-modem_ipa_data_trace	k
+-modem_ipa_fw	k
+-modem_ipa_fw_at	k
+-modem_ipa_gsi_enable	k
+-modem_ipa_item	k
+-modem_ipa_no_probe	k
+-modem_ipa_qmi	k
+-modem_ipa_quiet	k
+-modem_ipa_raw	k
+-modem_ipa_routes	k
+-modem_ipa_skip_uc	k
+-modem_ipa_smmu_off	k
+-modem_keep	k
+-modem_listen	k
+-modem_mba	k
+-modem_mba_only	k
+-modem_mba_part	k
+-modem_mdata	k
+-modem_meta_quiet	k
+-modem_mpss_early	k
+-modem_nas_wait	k
+-modem_new	k
+-modem_no_ipa_qmi	k
+-modem_no_nav	k
+-modem_no_tftp	k
+-modem_online	k
+-modem_pause	k
+-modem_quiesce_off	k
+-modem_rails_look	k
+-modem_return	k
+-modem_rmtfs_delay	k
+-modem_rmtfs_rw_fake	k
+-modem_rmtfs_rw_off	k
+-modem_share_off	k
+-modem_share_test	k
+-modem_sim_probe_off	k
+-modem_sim_switch	k
+-modem_sim_switch_off	k
+-modem_step	k
+-modem_tick	k
+-modem_wait	k
+-modem_wda_off	k
+-modem_wds_sub	k
+-modem_wlfw_ready	k
+-modem_wlfw_wait	k
+-net_names	k
+-net_trace	k
+-pmic	k
+-pmic_list	k
+-press_power	k
+-press_power_ms	k
+-privs	k
+-rd	kl
+-rec_mb	k
+-rec_ring	k
+-rec_secs	k
+-rec_sound	k
+-rec_sound_fed	k
+-rec_sound_mic	k
+-rec_start	k
+-rec_step	k
+-regtrace	k
+-return_cpu	k
+-return_panic	k
+-rmi4	k
+-rmi4_charger	k
+-rmi4_khz	k
+-rmi4_peek	k
+-rmi4_steps	k
+-rmi4_x	k
+-rmi4_y	k
+-root_apfs	u
+-sb_delay	u
+-serial	l
+-small_cores	k
+-small_cores_after	k
+-soc_cmd_db	k
+-soc_cpufreq	k
+-soc_cpufreq_groups	k
+-soc_cpufreq_osm	k
+-soc_cpufreq_step	k
+-soc_gsi_base	k
+-soc_imem	k
+-soc_ipa_base	k
+-soc_ipa_fw	k
+-soc_ipa_stream	k
+-soc_ipa_stream_uc	k
+-soc_mpss_mem	k
+-soc_pas_ipa	k
+-soc_pas_mpss	k
+-soc_rsc	k
+-soc_smem	k
+-soc_smem_size	k
+-socinfo	k
+-sound	k
+-sound_below	k
+-sound_gain	k
+-sound_guard_as	k
+-sound_pause	k
+-sound_secs	k
+-speaker_probe	k
+-surf_clear	k
+-surf_wrap	k
+-surftrace	k
+-surftrace_of	k
+-switcher_wallpaper	u
+-syssleep	k
+-systrace	k
+-systrace_name	k
+-thermal	k
+-thermal_log	k
+-thermal_poll	k
+-thermal_soc	k
+-thermal_stop	k
+-thermal_tm0	k
+-thermal_tm1	k
+-torch	kl
+-torch_max_s	k
+-torch_secs	k
+-touch_flip	k
+-touch_lat	ku
+-touch_poll_us	k
+-touch_rate	k
+-touch_spi_hz	k
+-touchscreen	k
+-tu_debug	u
+-ufs	l
+-ufs_bench	k
+-ufs_check	k
+-ufs_native	kl
+-ufs_native_bench	k
+-ufs_native_buffer	k
+-ufs_native_check	k
+-ufs_native_hang	k
+-ufs_native_leave	k
+-ufs_native_slots	k
+-ufs_native_spin	k
+-ufs_probe	l
+-ufs_shared_pa	k
+-ufs_write	kl
+-ui_lite	u
+-ustacks	k
+-ustacks_at	k
+-ustacks_count	k
+-ustacks_ms	k
+-ustacks_threads	k
+-ustacks_tname	k
+-var_hfs	u
+-var_save_ms	k
+-var_store	u
+-vblur	u
+-virtio_blk	k
+-virtio_input	k
+-virtio_net	k
+-virtio_sound	k
+-wallpaper_cache	u
+-wallpaper_freeze	u
+-wifi	k
+-wifi_again	k
+-wifi_arp_quiet	k
+-wifi_ask	k
+-wifi_ba	k
+-wifi_cal	k
+-wifi_dirty	k
+-wifi_file	k
+-wifi_fine	k
+-wifi_hold	k
+-wifi_irq	k
+-wifi_join	k
+-wifi_keep	k
+-wifi_listen	k
+-wifi_loud	k
+-wifi_lx	k
+-wifi_lx_step	k
+-wifi_mac	k
+-wifi_mission	k
+-wifi_new	k
+-wifi_pause	k
+-wifi_quiet	k
+-wifi_radio_read	k
+-wifi_ready	k
+-wifi_return	k
+-wifi_scan	k
+-wifi_scan_always	k
+-wifi_scan_gap	k
+-wifi_smmu	k
+-wifi_station	k
+-wifi_step	k
+-wifi_wait	k
+-wifi_watch	k
+-wifi_wide	k
+-xpcproxy_idversion	k
++adreno	k
++adreno_blind	k
++adreno_dirty	k
++adreno_fine	k
++adreno_keep	k
++adreno_keep_watch	k
++adreno_only	k
++adreno_pause	k
++adreno_return	k
++adreno_skip	k
++adreno_speed	k
++adreno_stream1	k
++adreno_watch	k
++adsp	k
++adsp8	k
++adsp8_again	k
++adsp8_apr	k
++adsp8_bb	k
++adsp8_cx	k
++adsp8_keep	k
++adsp8_listen	k
++adsp8_pause	k
++adsp8_se4	k
++adsp8_wait	k
++adsp_again	k
++adsp_apr_wait	k
++adsp_keep	k
++adsp_listen	k
++adsp_new	k
++adsp_pause	k
++adsp_return	k
++adsp_step	k
++adsp_wait	k
++aks_flags	k
++aks_keys	k
++aks_lockstate	k
++aks_log	k
++aks_probe	k
++aks_verbose	k
++apfs_cheap	k
++apfs_check	k
++apfs_chunk	k
++apfs_contents	k
++apfs_depth	k
++apfs_dev	k
++apfs_hash	k
++apfs_max	k
++apfs_meta_cluster	k
++apfs_mnt	k
++apfs_par	k
++apfs_root_c	k
++apfs_root_v	k
++apfs_round	k
++apfs_skip	k
++apfs_sparse	k
++apfs_store_len	k
++apfs_store_note	k
++apfs_store_seed	k
++apfs_subtree	k
++apfs_threads	k
++apfs_ubc_read	k
++apfs_volume	k
++apfs_volume_at	k
++apfs_walkers	k
++apfs_write_at	k
++apfs_write_byte	k
++apfs_write_len	k
++apfs_write_path	k
++applog	k
++applog_name	k
++autounlock	u
++battery	kl
++battery_shared_pa	k
++battery_stop	k
++battery_stop_poll	k
++battmgr	k
++bootcpu	kl
++bt	k
++bt_after	k
++bt_again	k
++bt_allcmds	k
++bt_extadv	k
++bt_lines	u
++bt_mac	k
++bt_said	k
++buttons	k
++buttons_pon	k
++buttons_steps	k
++buttons_voldown	k
++buttons_volup	k
++ca_metallib	u
++ca_prof	u
++ca_vbl	u
++caenv	u
++cam	kl
++cam_after	k
++cam_fake	k
++cam_fake_fps	k
++cam_frames	k
++cam_gain	k
++cam_keep_mb	k
++cam_mode	k
++cam_pattern	k
++cam_sensor	k
++cam_settle	k
++cam_shutter	k
++cam_vblank	k
++cc_fade	u
++cpufreq	k
++cpufreq_gov	k
++cpuload	k
++cpumask	l
++cpus	l
++ddr	k
++ddr_rest	k
++ddr_vote	k
++display_probe	k
++dsibl	k
++dsibl_test	k
++epoch	k
++fb_beam	k
++fb_beat	k
++fb_ca_hz	k
++fb_diff	k
++fb_filter	k
++fb_hz	k
++fb_intf	k
++fb_measure	k
++fb_pri	k
++fb_queue	k
++fb_threads	k
++fbheight	k
++fbscale	k
++fbsubtype	k
++fbtrace	k
++fbwidth	ku
++fg8998	k
++fg_charge	k
++fg_charge_ma	k
++fg_charger_look	k
++fg_input_ma	k
++gamut	l
++gic_vtimer	k
++gl	u
++glblit	u
++glcensus	u
++glcompile	u
++glcopy	u
++glenv	u
++glfetch	u
++glframes	u
++glgroup	u
++glno	u
++glnumbers	u
++glplain	u
++glprecision	u
++glprof	u
++glsb3	u
++glshaders	u
++glshow	u
++glshow_part	u
++glshow_zoom	u
++glskip	u
++glslow	u
++glstill	u
++glsync	u
++gltrace	u
++gltrace_at	u
++gltrace_corners	u
++gltrace_draws	u
++gltrace_frames	u
++gltrace_function	u
++gltrace_lit	u
++gltrace_look	u
++gltrace_place	u
++gltrace_shaders	u
++gltrace_uniforms	u
++glwait	u
++glyes	u
++gpu	k
++gpu_cached	k
++gpu_dvfs	k
++gpu_exact	k
++gpu_keep	k
++gpu_log	k
++hakios_kver	k
++haptic	k
++haptic_effect	k
++haptic_ms	k
++haptic_strength	k
++hid_resource	k
++hv_wdt_pet	k
++ipa8	k
++ipa_gsi_look	k
++ipa_iram_look	k
++loader_return_after	kl
++m2v_utrace	u
++machine_name	k
++membench	k
++metal	ku
++metal_all	u
++metal_defer	u
++metal_dump	u
++metal_fps	u
++metal_gmem	u
++metal_gmem_draws	u
++metal_gmem_off	u
++metal_luma_boost	u
++metal_m2v	u
++metal_skip	u
++metal_trace	u
++metal_watch	u
++mic	k
++mic_adc	k
++mic_input	k
++mic_main	k
++mic_secs	k
++mic_tap	k
++mic_test	k
++modem	k
++modem_again	k
++modem_apn	k
++modem_buffer	k
++modem_cell_probe	k
++modem_data	k
++modem_data_nobind	k
++modem_data_off	k
++modem_data_wait	k
++modem_dpm_off	k
++modem_ipa	k
++modem_ipa_bus	k
++modem_ipa_bus_off	k
++modem_ipa_data_off	k
++modem_ipa_data_trace	k
++modem_ipa_fw	k
++modem_ipa_fw_at	k
++modem_ipa_gsi_enable	k
++modem_ipa_item	k
++modem_ipa_no_probe	k
++modem_ipa_qmi	k
++modem_ipa_quiet	k
++modem_ipa_raw	k
++modem_ipa_routes	k
++modem_ipa_skip_uc	k
++modem_ipa_smmu_off	k
++modem_keep	k
++modem_listen	k
++modem_mba	k
++modem_mba_only	k
++modem_mba_part	k
++modem_mdata	k
++modem_meta_quiet	k
++modem_mpss_early	k
++modem_nas_wait	k
++modem_new	k
++modem_no_ipa_qmi	k
++modem_no_nav	k
++modem_no_tftp	k
++modem_online	k
++modem_pause	k
++modem_quiesce_off	k
++modem_rails_look	k
++modem_return	k
++modem_rmtfs_delay	k
++modem_rmtfs_rw_fake	k
++modem_rmtfs_rw_off	k
++modem_share_off	k
++modem_share_test	k
++modem_sim_probe_off	k
++modem_sim_switch	k
++modem_sim_switch_off	k
++modem_step	k
++modem_tick	k
++modem_wait	k
++modem_wda_off	k
++modem_wds_sub	k
++modem_wlfw_ready	k
++modem_wlfw_wait	k
++net_names	k
++net_trace	k
++pmic	k
++pmic_list	k
++press_power	k
++press_power_ms	k
++privs	k
++rd	kl
++rec_mb	k
++rec_ring	k
++rec_secs	k
++rec_sound	k
++rec_sound_fed	k
++rec_sound_mic	k
++rec_start	k
++rec_step	k
++regtrace	k
++return_cpu	k
++return_panic	k
++rmi4	k
++rmi4_addr	k
++rmi4_attn	k
++rmi4_charger	k
++rmi4_func	k
++rmi4_khz	k
++rmi4_peek	k
++rmi4_reset	k
++rmi4_scl	k
++rmi4_sda	k
++rmi4_se	k
++rmi4_seidx	k
++rmi4_steps	k
++rmi4_vio	k
++rmi4_x	k
++rmi4_y	k
++root_apfs	u
++sb_delay	u
++serial	l
++small_cores	k
++small_cores_after	k
++soc_cmd_db	k
++soc_cpufreq	k
++soc_cpufreq_groups	k
++soc_cpufreq_osm	k
++soc_cpufreq_step	k
++soc_gsi_base	k
++soc_imem	k
++soc_ipa_base	k
++soc_ipa_fw	k
++soc_ipa_stream	k
++soc_ipa_stream_uc	k
++soc_mpss_mem	k
++soc_pas_ipa	k
++soc_pas_mpss	k
++soc_rsc	k
++soc_smem	k
++soc_smem_size	k
++socinfo	k
++sound	k
++sound_below	k
++sound_gain	k
++sound_guard_as	k
++sound_pause	k
++sound_secs	k
++speaker_probe	k
++surf_clear	k
++surf_wrap	k
++surftrace	k
++surftrace_of	k
++switcher_wallpaper	u
++syssleep	k
++systrace	k
++systrace_name	k
++thermal	k
++thermal_log	k
++thermal_poll	k
++thermal_soc	k
++thermal_stop	k
++thermal_tm0	k
++thermal_tm1	k
++torch	kl
++torch_max_s	k
++torch_secs	k
++touch_flip	k
++touch_lat	ku
++touch_poll_us	k
++touch_rate	k
++touch_spi_hz	k
++touchscreen	k
++tu_debug	u
++ufs	l
++ufs_bench	k
++ufs_check	k
++ufs_native	kl
++ufs_native_bench	k
++ufs_native_buffer	k
++ufs_native_check	k
++ufs_native_hang	k
++ufs_native_leave	k
++ufs_native_slots	k
++ufs_native_spin	k
++ufs_probe	l
++ufs_shared_pa	k
++ufs_write	kl
++ui_lite	u
++ustacks	k
++ustacks_at	k
++ustacks_count	k
++ustacks_ms	k
++ustacks_threads	k
++ustacks_tname	k
++var_hfs	u
++var_save_ms	k
++var_store	u
++vblur	u
++virtio_blk	k
++virtio_input	k
++virtio_net	k
++virtio_sound	k
++wallpaper_cache	u
++wallpaper_freeze	u
++wifi	k
++wifi_again	k
++wifi_arp_quiet	k
++wifi_ask	k
++wifi_ba	k
++wifi_cal	k
++wifi_dirty	k
++wifi_file	k
++wifi_fine	k
++wifi_hold	k
++wifi_irq	k
++wifi_join	k
++wifi_keep	k
++wifi_listen	k
++wifi_loud	k
++wifi_lx	k
++wifi_lx_step	k
++wifi_mac	k
++wifi_mission	k
++wifi_new	k
++wifi_pause	k
++wifi_quiet	k
++wifi_radio_read	k
++wifi_ready	k
++wifi_return	k
++wifi_scan	k
++wifi_scan_always	k
++wifi_scan_gap	k
++wifi_smmu	k
++wifi_station	k
++wifi_step	k
++wifi_wait	k
++wifi_watch	k
++wifi_wide	k
++xpcproxy_idversion	k

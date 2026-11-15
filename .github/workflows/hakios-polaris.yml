@@ -58,6 +58,9 @@ jobs:
           # the U-Boot setup (uefi/u-boot/{apply,build}.sh, hakios.patch, files/)
           git clone -q --depth 1 -b mac https://github.com/oosexgang/hakios-uefi "$K/uefi"
           cd "$K"
+          # polaris kernel patches carried by this repository (the old xnu/patches
+          # series is the previous line's and stays out)
+          patch -p1 < ../xnu/patches/0103-polaris-rmi4-parameterized-layout.patch
           python3 tools/hakios-device.py check polaris
           make polaris_defconfig
 
