@@ -1,6 +1,10 @@
 gic_vtimer=19
 ddr=0
 soc_cmd_db=0x85fe0000
+soc_cpufreq=0x17d43000
+soc_cpufreq_step=0x2800
+soc_cpufreq_groups=2
+soc_cpufreq_osm=1
 soc_ipa_base=0x1e40000
 soc_gsi_base=0x1e04000
 soc_aoss=0xc300000
