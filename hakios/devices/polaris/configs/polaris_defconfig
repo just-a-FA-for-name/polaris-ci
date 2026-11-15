@@ -7,9 +7,9 @@
 #include sdm845.config
 CONFIG_DEVICE="polaris"
 # CONFIG_UFS is not set
-# CONFIG_TOUCHSCREEN is not set
+CONFIG_TOUCHSCREEN=y
 # CONFIG_HAKIOS_GOODIX is not set
-# CONFIG_HAKIOS_BUTTONS is not set
+CONFIG_HAKIOS_BUTTONS=y
 # CONFIG_HAKIOS_UFS is not set
 # CONFIG_HAKIOS_ADRENO is not set
 # CONFIG_HAKIOS_GPUSERVICE is not set

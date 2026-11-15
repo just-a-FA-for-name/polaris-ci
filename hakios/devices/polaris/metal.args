@@ -7,7 +7,8 @@ bootcpu=7 cpus=8 fb_hz=60 fb_threads=3
 # slave 0 (buttons_pon=0x008), volume up on GPIO6 (0xc500 -> 0x0c5); volume down is this block's RESIN_N, the default.
 buttons_pon=0x008 buttons_volup=0x0c5
 
-# the touch screen (drivers/input/hakios.rmi4.c): a Synaptics DSX S3330 speaking RMI4 over I2C at 0x20, on QUP
-# wrapper 1 engine 6 (the device tree's i2c@a98000, qupv3_se14; SDA/SCL on GPIO34/33 at function qup14 = 2, its IRQ
-# GPIO125 and reset GPIO99 as fajita's); the IO rail is tp_vddio_vreg, a fixed supply -- no GPIO to drive
-rmi4_se=0xa98000 rmi4_seidx=6 rmi4_addr=0x20 rmi4_scl=33 rmi4_sda=34 rmi4_func=2 rmi4_reset=99 rmi4_attn=125 rmi4_vio=0 rmi4_x=1080 rmi4_y=2160
+# the touch screen (drivers/input/hakios.rmi4.c): a Synaptics DSX S3330 speaking RMI4 over I2C at 0x20 (the driver's
+# default), on QUP wrapper 1 engine 6 (the device tree's i2c@a98000, qupv3_se14; SDA/SCL on GPIO34/33 at function
+# qup14 = 2, IRQ GPIO125 and reset GPIO99, all as fajita's so unlisted); the IO rail is tp_vddio_vreg, a fixed supply
+# (rmi4_vio=0); the panel is 1080x2160 (fajita's default x is 1080 already).
+rmi4_se=0xa98000 rmi4_seidx=6 rmi4_scl=33 rmi4_sda=34 rmi4_func=2 rmi4_vio=0 rmi4_y=2160
