@@ -1,4 +1,39 @@
-﻿## CURRENT 2026-11-07 step12 bisect build (supersedes stale sections)
+﻿## CURRENT 2026-11-15 HakiOS input stage (supersedes the dipper line below)
+
+- The HakiOS upstream line is now the working one: loader + XNU boot from RAM, real
+  Darwin userland (system.apfs) with launchd/backboardd/SpringBoard verified on the
+  framebuffer. Everything below this heading is the older dipper/sweet line.
+- Validated boot facts (devices/polaris/{soc,metal}.args): bootcpu=7, cpus=1 for
+  tests (SMP unverified), gic_vtimer=19, soc_* args incl. soc_cmd_db=0x85fe0000,
+  ddr=0, OSM cpufreq (soc_cpufreq=0x17d43000, step 0x2800, groups 2, osm=1).
+- Verified SoC drivers on hardware: socinfo (SoC 321 SDM845 rev 2.1 serial ...f377),
+  thermal (21/27 sensors, hottest ~39-43C), cpufreq (OSM group 1 -> 2649 MHz, core 7
+  loop 164->541).
+- Userland: WSL-built userland/system.apfs (~2.49 GB, iPhone10,3 16.5/20F66 IPSW) +
+  root.apfs staged as payload ramdisk. SpringBoard home screen photographed.
+- INPUT STAGE in progress (commit ef303a5, CI run 43694595362):
+  - hakios.rmi4.c parameterized via patch 0103 (xnu/patches/, applied in workflow
+    before defconfig): se/seidx/addr/scl/sda/func/reset/attn/vio all boot-args,
+    fajita values stay defaults.
+  - polaris touch facts (live DTB): synaptics_dsi_i2c@20 on i2c@a98000 (QUP wrap1
+    SE index 6 = SE14), SCL/SDA = GPIO33/34 func qup14=2 (NORTH tile), IRQ GPIO125
+    (EAST), reset GPIO99 (NORTH), avdd = pm8998_l28 (same ldoa28), vdd =
+    tp_vddio_vreg fixed supply (rmi4_vio=0), panel 1080x2160. ub-addr 0x2c exists
+    but 0x20 is the main one.
+  - polaris buttons: PM8998 power-on block 0x800 slave0 = buttons_pon=0x008,
+    volup = PM8998 GPIO6 (0xc500) = buttons_volup=0x0c5, voldown = RESIN_N
+    (driver default, no arg). Arbiter regs 0xc440000/0xc40a000/0xe600000 are
+    SDM845-common, already hardcoded correctly.
+  - Next: download run 43694595362 artifacts, boot image, stage payload with
+    `buttons=1` first, then `rmi4=1` (+ optional rmi4_steps bisect), verify via
+    oem log + real userland.
+  - IMPORTANT: kernel in CI = upstream fajita-v0.1-beta zip + device layer +
+    xnu/patches/0103. Driver changes must go through new patches in xnu/patches/
+    (numbered 0103+) — the older 0088-0102 series belongs to the dipper line and
+    is NOT applied by the workflow.
+- Phone was in ABL fastboot at last check.
+
+## CURRENT 2026-11-07 step12 bisect build (supersedes stale sections)
 
 - Clean baseline restored: branch `polaris-dipper-gpu-20261107-clean`, HEAD `1699a19` = 353327a source + step12 gating (`ce366f8`) + SweetFramebuffer perf work; 0102 patch now 701420 B / 15 files, normalized replay over pristine baseline: NORMALIZED_REPLAY_FAIL=0. Previous AI's 8 diagnostic commits (646f7a0..73cc3d8) NOT inherited; `out/dipper-gpu-xnu` re-replayed from baseline.
 - New cmdline-selectable controls in mi8_adreno.c (all default-off, one build supports full bisect without recompile):
