@@ -61,6 +61,7 @@ jobs:
           # polaris kernel patches carried by this repository (the old xnu/patches
           # series is the previous line's and stays out)
           patch -p1 < ../xnu/patches/0103-polaris-rmi4-parameterized-layout.patch
+          patch -p1 < ../xnu/patches/0104-polaris-a630-v2-no-ahb.patch
           python3 tools/hakios-device.py check polaris
           make polaris_defconfig
 

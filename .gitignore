@@ -21,3 +21,4 @@ tools/platform-tools.zip
 *.simg
 *.img
 wsl-*.log
+artifacts-*/

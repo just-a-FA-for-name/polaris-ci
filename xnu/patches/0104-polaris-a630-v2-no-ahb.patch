@@ -1,0 +1,60 @@
+--- a/drivers/gpu/hakios.a630.c
++++ b/drivers/gpu/hakios.a630.c
+@@ -125,6 +125,8 @@ static uint32_t last_step, skip_steps, pause_ms = 2200, fine, watch_seconds = 20
+ static uint32_t step;                   /* the one being performed */
+ static uint32_t speed_bin;              /* which of the GPUs of this kind the fuses say this is (step 2) */
+ static uint32_t newest_step;            /* the highest one asked for: the one that has not been seen to work */
++static uint32_t ahb_cbcr = 1;           /* adreno_ahb=0: the v2 GPUCC (polaris) has no gpu_cc_ahb at 0x1078:
++                                         reading or writing it stalls the bus and ends the run */
+ static char last_write[96] = "nothing written";
+ static bool quiet;                      /* repeating accesses that have been announced and seen to work: say nothing */
+ 
+@@ -549,7 +551,9 @@ step_gpucc(void)
+ 	get(&gpucc, "gmu_clk_src source", GPUCC_GMU_RCGR + 4);
+ 	get(&gpucc, "cxo_aon", GPUCC_CXO_AON_CBCR);
+ 	get(&gpucc, "gx_gmu", GPUCC_GX_GMU_CBCR);
+-	get(&gpucc, "ahb", GPUCC_AHB_CBCR);
++	if (ahb_cbcr) {
++		get(&gpucc, "ahb", GPUCC_AHB_CBCR);
++	}
+ 	get(&gpucc, "cx_gmu", GPUCC_CX_GMU_CBCR);
+ 	get(&gpucc, "cxo", GPUCC_CXO_CBCR);
+ 	get(&gpucc, "smmu vote", GPUCC_SMMU_VOTE_CBCR);
+@@ -712,7 +716,7 @@ step_clocks(void)
+ 	 */
+ 	announce("in the GPU's clock controller: the clocks of the GMU and of the GPU block's register bus on");
+ 	if (!clock_on(&gpucc, "cxo", GPUCC_CXO_CBCR, true) ||
+-	    !clock_on(&gpucc, "ahb", GPUCC_AHB_CBCR, false) ||
++	    (ahb_cbcr && !clock_on(&gpucc, "ahb", GPUCC_AHB_CBCR, false)) ||
+ 	    !clock_on(&gpucc, "cx_gmu", GPUCC_CX_GMU_CBCR, true)) {
+ 		return false;
+ 	}
+@@ -737,13 +741,18 @@ clocks_running(void)
+ 
+ 	announce("read the GPU block's clocks back: bit 31 of a clock's control register says it is off");
+ 	for (unsigned i = 0; i < sizeof(clocks) / sizeof(clocks[0]); i++) {
+-		uint32_t cbcr = get(&gpucc, clocks[i].name, clocks[i].cbcr);
++		uint32_t cbcr;
++
++		if (!ahb_cbcr && clocks[i].cbcr == GPUCC_AHB_CBCR) {
++			continue;
++		}
++		cbcr = get(&gpucc, clocks[i].name, clocks[i].cbcr);
+ 
+ 		printf("adreno: %u: %s %s\n", step, clocks[i].name, cbcr & CBCR_OFF ? "is off" : "RUNS");
+ 	}
+ 	get(&gpucc, "gmu_clk_src command", GPUCC_GMU_RCGR);
+ 	get(&gpucc, "gmu_clk_src source", GPUCC_GMU_RCGR + 4);
+-	if (rd(gpucc.base + GPUCC_AHB_CBCR) & CBCR_OFF) {
++	if (ahb_cbcr && (rd(gpucc.base + GPUCC_AHB_CBCR) & CBCR_OFF)) {
+ 		printf("adreno: %u: the GPU block's register bus has no clock: the GMU would not answer\n", step);
+ 		return false;
+ 	}
+@@ -4109,6 +4118,7 @@ hakios_adreno_init(void)
+ 	}
+ 	PE_parse_boot_argn("adreno_pause", &pause_ms, sizeof(pause_ms));
+ 	PE_parse_boot_argn("adreno_fine", &fine, sizeof(fine));
++	PE_parse_boot_argn("adreno_ahb", &ahb_cbcr, sizeof(ahb_cbcr));
+ 	if (last_step == 0) {
+ 		return;                                 /* (adreno=0: the GPU is left alone) */
+ 	}
