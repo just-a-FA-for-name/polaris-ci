@@ -49,6 +49,17 @@
   - cmdline discipline: loader prefixes ~50 chars (debug/rd/hakios_kver) so the
     payload cmdline budget is ~550 chars, not 607. Minimal working set ~353.
   - buttons=1 had no effect yet (driver object absent in 43694595362 build).
+
+- BUTTONS VERIFIED 2026-11-15 (kernel from run 43698235770, defconfig fix):
+  - PMIC arbiter v5 512 ch; ch172=PON 0x800 (buttons_pon), ch190=volup GPIO
+    0xc500 (buttons_volup); PON subtype 0x4 -> power=bit0, voldown=bit1 RESIN;
+    all keys read "released"; 7618 SPMI reads 0 failed; watches every 16 ms.
+  - rmi4 now reads USB-in via buttons' hakios_pmic_reader ("USB in ... charger
+    bit on") — cross-driver PMIC path works.
+  - Physical button presses + userland touch still untested (user away; kernel
+    watches log "presses of power/volume up/volume down" and "finger N down").
+- NEXT: physical button check on the same payload, then root.apfs+system.apfs
+  run with SpringBoard and real touch events (rwtouch exists for scripted taps).
 - Phone: ABL fastboot -> u-boot -> xnuloader alive at last check.
 
 ## CURRENT 2026-11-07 step12 bisect build (supersedes stale sections)
